@@ -6,7 +6,7 @@ Never change more than one major component per version without noting it.
 | Version | Date | Change | Cand. recall (holdout) | Oracle F0.5 | Holdout F0.5 | Precision / Recall (micro) | Singleton acc. | LB public | Git tag |
 |---|---|---|---|---|---|---|---|---|---|
 | v000 | 25 Sep | EDA, split, scorer | — | — | 0.0558 (all-empty) | — | 1.000 | — | — |
-| v001 | 25 Sep | Normalization v1 + token blocking (k=20) + LightGBM + OOF-tuned decision | 0.948 | 0.980 | TODO | TODO | TODO | TODO | TODO |
+| v001 | 25 Sep | Normalization v1 + token blocking (k=20) + LightGBM + OOF-tuned decision | 0.948 | 0.980 | 0.9481 | 0.987 / 0.894 | 0.950 | TODO | TODO |
 
 ## v000 — data analysis and scaffolding
 - EDA report: `experiments/v000_eda/eda_report.txt`.
@@ -20,8 +20,9 @@ Never change more than one major component per version without noting it.
   Recall@20 0.948, @50 0.962. Runtime 815 s for holdout.
 - Blocking misses @50: 57,559 (non-Latin 21.1K, address-only overlap 13.3K, state mismatch 9.6K,
   no shared number 9.0K, outranked 4.5K). Details: `experiments/v001/blocking_misses.txt`.
-- Matcher: TODO (OOF F0.5, t, t_top, top features).
-- Holdout: TODO.
+- Matcher: 300K train-fold S1, 6.0M pairs (16.4% positive); OOF F0.5 0.9467 at t=0.65, t_top=0.65;
+  best iters 1110/934/953. Top features by gain: comb 0.43, comb_gap 0.15, num_jac 0.07, blk_score 0.06.
+- Holdout: F0.5 0.9481 (India 0.9225, US 0.9652); precision 0.987, recall 0.894; singleton acc 0.950
 - Submission: TODO.
 
 ## Planned

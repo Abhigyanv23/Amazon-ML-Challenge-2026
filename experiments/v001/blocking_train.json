@@ -1,0 +1,36 @@
+{
+  "n_s1": 300000,
+  "n_true_pairs": 1038961,
+  "k5": {
+    "candidate_recall": 0.8372547188970519,
+    "oracle_F0.5": 0.9524443912919318,
+    "avg_cands": 5.0,
+    "total_pairs": 1500000
+  },
+  "k10": {
+    "candidate_recall": 0.9273572347758963,
+    "oracle_F0.5": 0.9729523474019595,
+    "avg_cands": 9.99996,
+    "total_pairs": 2999988
+  },
+  "k20": {
+    "candidate_recall": 0.9479739855490245,
+    "oracle_F0.5": 0.9799379058321503,
+    "avg_cands": 19.999583333333334,
+    "total_pairs": 5999875
+  },
+  "missed_pairs_at_max_k": 54053,
+  "missed_due_to_state_partition": 6899,
+  "params": {
+    "split": "train",
+    "s1_set": "train",
+    "sample": 300000,
+    "k": 20,
+    "max_df": 0.02,
+    "w_name": 1.0,
+    "w_addr": 1.0,
+    "w_num": 1.0,
+    "threads": 16,
+    "tag": "v001"
+  }
+}
