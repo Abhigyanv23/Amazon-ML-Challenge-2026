@@ -6,7 +6,11 @@ street abbreviations) come from general language knowledge, not business data.
 
 Adds columns (originals kept):
   country_key, name_norm, name_core, name_legal, name_nospace, name_nonlatin,
-  addr_norm, addr_nums, addr_state, addr_blank
+  addr_norm, addr_nums, addr_zip, addr_state, addr_blank, addr_state_src
+
+v2 changes: postcodes split into addr_zip (not house numbers); last state-like component wins;
+missing states filled from an address-component -> state map LEARNED FROM THE SAME SPLIT'S S1
+(unlabeled text only); extra French abbreviations.
 
 Usage (repo root):
   python src/normalization.py --demo
@@ -16,6 +20,7 @@ Usage (repo root):
 """
 import argparse
 import os
+from collections import Counter
 import re
 import time
 import unicodedata
@@ -153,7 +158,8 @@ ADDR_FR = {"r": "rue", "bd": "bd", "bld": "bd", "blvd": "bd", "boulevard": "bd",
            "avenue": "av", "pl": "pl", "place": "pl", "imp": "imp", "impasse": "imp", "ch": "chemin",
            "che": "chemin", "chem": "chemin", "rte": "rte", "route": "rte", "all": "allee",
            "fbg": "fbg", "faubourg": "fbg", "qu": "quai", "sq": "sq", "square": "sq", "crs": "cours",
-           "st": "saint", "ste": "sainte", "pass": "passage", "res": "residence"}
+           "st": "saint", "ste": "sainte", "pass": "passage", "res": "residence", "q": "quai",
+           "appt": "apt", "n": "no"}
 ADDR_MAPS = {"us": {**ADDR_COMMON, **ADDR_US}, "india": {**ADDR_COMMON, **ADDR_IN},
              "france": {**ADDR_COMMON, **ADDR_FR}}
 
@@ -188,41 +194,121 @@ STATE_MAPS = {"us": US_STATES, "india": IN_STATES, "france": FR_REGIONS}
 
 _NUM = re.compile(r"\d+")
 _ALNUM_SPLIT = re.compile(r"(?<=\d)(?=[a-z]{3,})")      # 15south -> 15 south (keeps 3906a, 33rd)
+_IN_PIN_SPLIT = re.compile(r"(?<!\d)([1-8]\d{2}) (\d{3})(?!\d)")   # "600 042" -> "600042"
+_US_ZIP4 = re.compile(r"(?<!\d)(\d{5}) (\d{4})$")                  # "75001 1234" -> "75001"
+_RE_ZIP = {"us": re.compile(r"\d{5}"), "france": re.compile(r"\d{5}"), "india": re.compile(r"[1-8]\d{5}")}
+
+
+def _is_zip(t, j, n, ck):
+    rx = _RE_ZIP.get(ck)
+    if rx is None or not rx.fullmatch(t):
+        return False
+    if ck == "us":                     # US house numbers can be 5 digits: ZIP only as last token, not first
+        return j == n - 1 and (n == 1 or j > 0)
+    return True
+
+
+def _clean_component(c, ck):
+    c = squash(_PUNCT.sub(" ", c))
+    if ck == "india":
+        c = _IN_PIN_SPLIT.sub(r"\1\2", c)
+    elif ck == "us":
+        c = _US_ZIP4.sub(r"\1", c)
+    return c
 
 
 def normalize_address(raw, country):
-    """-> (addr_norm, addr_nums, addr_state, addr_blank)"""
+    """-> (addr_norm, addr_nums, addr_zip, addr_state, addr_blank)"""
     if not str(raw).strip():
-        return "", "", "", 1
+        return "", "", "", "", 1
     ck = country_key(country)
     amap = ADDR_MAPS.get(ck, ADDR_COMMON)
     smap = STATE_MAPS.get(ck, {})
     s = base_clean(raw).replace("&", " and ")
 
-    nums = []
-    for x in _NUM.findall(s):
-        x = x.lstrip("0") or "0"
-        if x not in nums:
-            nums.append(x)
-
-    state, comps = "", []
+    nums, zips, state, comps = [], [], "", []
     for c in s.split(","):
-        c = squash(_PUNCT.sub(" ", c))
+        c = _clean_component(c, ck)
         if not c:
             continue
+        toks = c.split()
+        keep = []
+        for j, t in enumerate(toks):
+            if _is_zip(t, j, len(toks), ck):
+                if t not in zips:
+                    zips.append(t)
+            else:
+                keep.append(t)
+        if not keep:
+            continue
+        c = " ".join(keep)
         code = smap.get(c)
-        if code:                       # a whole comma-component that is a state/region
-            state = state or code
+        if code:                       # whole component is a state/region; the LAST one wins
+            state = code
             comps.append(code)
             continue
+        for x in _NUM.findall(c):
+            x = x.lstrip("0") or "0"
+            if x not in nums:
+                nums.append(x)
         c = _ALNUM_SPLIT.sub(" ", c)
         comps.append(" ".join(amap.get(t, t) for t in c.split()))
-    return " ".join(comps), " ".join(nums), state, 0
+    return " ".join(comps), " ".join(nums), " ".join(zips), state, 0
+
+
+# ------------------------------------------------------------------ learned state fill (data-derived)
+def _comp_keys(raw, ck):
+    """Address components as lookup keys: cleaned, abbreviations mapped, digits/postcodes removed."""
+    amap = ADDR_MAPS.get(ck, ADDR_COMMON)
+    keys = []
+    for c in base_clean(raw).replace("&", " and ").split(","):
+        toks = [amap.get(t, t) for t in _clean_component(c, ck).split() if not any(ch.isdigit() for ch in t)]
+        if toks:
+            keys.append(" ".join(toks))
+    return keys
+
+
+def build_state_map(s1n, min_count=20, purity=0.98):
+    """(country, component) -> state, learned from S1 records of the same split (which all have a state)."""
+    cnt, tot = Counter(), Counter()
+    for addr, ck, st in zip(s1n.business_address, s1n.country_key, s1n.addr_state):
+        if not st:
+            continue
+        smap = STATE_MAPS.get(ck, {})
+        for k in set(_comp_keys(addr, ck)):
+            if k in smap:
+                continue
+            cnt[(ck, k, st)] += 1
+            tot[(ck, k)] += 1
+    return {(ck, k): st for (ck, k, st), n in cnt.items()
+            if n >= min_count and n / tot[(ck, k)] >= purity}
+
+
+def fill_state(df, smap_learned):
+    """Fill empty addr_state from learned components (majority vote). Sets addr_state_src=2."""
+    miss = np.where((df.addr_state.to_numpy(dtype=object) == "") & (df.addr_blank.to_numpy() == 0))[0]
+    addrs = df.business_address.to_numpy(dtype=object)[miss]
+    cks = df.country_key.to_numpy(dtype=object)[miss]
+    rows, vals = [], []
+    for i, a, ck in zip(miss, addrs, cks):
+        votes = Counter(smap_learned[(ck, k)] for k in _comp_keys(a, ck) if (ck, k) in smap_learned)
+        if votes:
+            top = votes.most_common(2)
+            if len(top) == 1 or top[0][1] > top[1][1]:
+                rows.append(i); vals.append(top[0][0])
+    if rows:
+        st = df.addr_state.to_numpy(dtype=object).copy()
+        src = df.addr_state_src.to_numpy().copy()
+        st[rows] = vals
+        src[rows] = 2
+        df["addr_state"] = st
+        df["addr_state_src"] = src.astype("int8")
+    return df, len(rows)
 
 
 # ------------------------------------------------------------------ frames
 COLS = ["name_norm", "name_core", "name_legal", "name_nospace", "name_nonlatin",
-        "addr_norm", "addr_nums", "addr_state", "addr_blank"]
+        "addr_norm", "addr_nums", "addr_zip", "addr_state", "addr_blank"]
 
 
 def _norm_chunk(rows):
@@ -244,7 +330,9 @@ def normalize_frame(df, n_jobs=None, chunk=50_000):
     df = df.copy()
     df["country"] = df["country"].map(normalize_country)
     df["country_key"] = df["country"].map(country_key)
-    return pd.concat([df, out], axis=1)
+    df = pd.concat([df, out], axis=1)
+    df["addr_state_src"] = (df["addr_state"] != "").astype("int8")     # 1 explicit, 0 none, 2 learned
+    return df
 
 
 # ------------------------------------------------------------------ demo / eval
@@ -261,6 +349,10 @@ DEMO = [
     ("Chantons Tgavsax SA", "N°23 R. D'arras, Lille, Nord", "France"),
     ("Fédération du Musical", "3 R MIMEREL, ROUBAIX, Hauts-de-France", "France"),
     ("Rivas's Fisheries", "", "US"),
+    ("Innovative Entergy", "19 Johnson Lane, Unit Apartment 2, Washington, NY", "US"),
+    ("Blue Program", "261 Jo Mar Road, Ardmore, AL 36049-1234", "US"),
+    ("Amicale", "3 R Mimerel, 59100 Roubaix", "France"),
+    ("Kumar Stores", "Old No#75, Chennai 600 042., TN", "India"),
 ]
 
 
@@ -270,7 +362,7 @@ def run_demo():
         aa = normalize_address(a, c)
         print(f"\n[{c}] {n!r} | {a!r}")
         print(f"   name_core={nn[1]!r}  legal={nn[2]!r}  nospace={nn[3]!r}  nonlatin={nn[4]}")
-        print(f"   addr_norm={aa[0]!r}  nums={aa[1]!r}  state={aa[2]!r}  blank={aa[3]}")
+        print(f"   addr_norm={aa[0]!r}  nums={aa[1]!r}  zip={aa[2]!r}  state={aa[3]!r}  blank={aa[4]}")
 
 
 def _jac(x, y):
@@ -320,8 +412,12 @@ def run_eval(n_pairs=200_000, seed=0):
     oth = oth[oth.entity_id.isin(need)]
     print(f"loaded in {time.time() - t:.0f}s; normalizing {len(s1)} S1 + {len(oth)} S2/S3 records")
 
+    smap = build_state_map(normalize_frame(load_source("train", 1)))
+    print(f"learned state map: {len(smap)} components")
     a = normalize_frame(s1).set_index("entity_id").loc[pairs.source1_entity_id].reset_index()
-    b = normalize_frame(oth).set_index("entity_id").loc[pairs.matched_ids].reset_index()
+    b, n_fill = fill_state(normalize_frame(oth), smap)
+    print(f"filled state for {n_fill} S2/S3 records")
+    b = b.set_index("entity_id").loc[pairs.matched_ids].reset_index()
 
     rng = np.random.default_rng(seed)
     perm = np.arange(len(b))
@@ -338,13 +434,21 @@ def run_eval(n_pairs=200_000, seed=0):
 
 def run_split(split):
     os.makedirs(CACHE_DIR, exist_ok=True)
+    smap = None
     for n in (1, 2, 3):
         t = time.time()
         df = normalize_frame(load_source(split, n))
+        if n == 1:
+            smap = build_state_map(df)
+            print(f"learned state map from {split}_source1: {len(smap)} components")
+            filled = 0
+        else:
+            df, filled = fill_state(df, smap)
         df.to_parquet(cache_path(split, n), index=False)
-        print(f"{split}_source{n}: {len(df)} rows in {time.time() - t:.0f}s | "
-              f"nonlatin names {df.name_nonlatin.mean():.1%} | state found {(df.addr_state != '').mean():.1%} | "
-              f"blank addr {df.addr_blank.mean():.1%} -> {cache_path(split, n)}")
+        found = (df.addr_state != "").groupby(df.country_key).mean()
+        print(f"{split}_source{n}: {len(df)} rows in {time.time() - t:.0f}s | state filled {filled} | "
+              f"state found " + ", ".join(f"{k}={v:.1%}" for k, v in found.items()) +
+              f" | zip present {(df.addr_zip != '').mean():.1%} -> {cache_path(split, n)}")
         del df
 
 
