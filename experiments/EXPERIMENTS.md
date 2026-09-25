@@ -8,7 +8,7 @@ Never change more than one major component per version without noting it.
 | v000 | 25 Sep | EDA, split, scorer | — | — | 0.0558 (all-empty) | — | 1.000 | — | — |
 | v001 | 25 Sep | Normalization v1 + token blocking (k=20) + LightGBM + OOF-tuned decision | 0.948 | 0.980 | 0.9481 | 0.987 / 0.894 | 0.950 | 0.9310 | day1-sub1 |
 | v002 | 25 Sep | Normalization v2 (zip, learned state fill) + 3-channel blocking + features v2 | 0.968 | 0.989 | 0.9545 | 0.988 / 0.905 | 0.953 | 0.9436 | day1-sub2 |
-| v003 | 25 Sep | Stage-2 group-consistency rescoring on v002 stage-1 probabilities | 0.968 | 0.989 | TODO | TODO | TODO | TODO | TODO |
+| v003 | 26 Sep | Stage-2 group-consistency rescoring on v002 stage-1 probabilities | 0.968 | 0.989 | 0.9580 | 0.988 / 0.920 | 0.963 | TODO | day2-sub1 |
 
 Public leaderboard leader (25 Sep): 0.9859.
 
@@ -52,8 +52,12 @@ Public leaderboard leader (25 Sep): 0.9859.
 - For each candidate: agreement with the other confident candidates of the same S1 (top 6 with p1 >= 0.3):
   name, no-space name, address, numbers, zip, state (max, p-weighted mean, strong-link count),
   plus stage-1 probability rank/gap/second-best and group counts. Second LightGBM on OOF stage-1 probabilities.
-- OOF: TODO (stage-1 reference 0.9533).
-- Holdout: TODO (v002 0.9545).
+- OOF: stage-2 0.9565 vs stage-1 0.9533 on the same rows, at t=t_top=0.65; best iters 122/173/196.
+  Top gain: p1 0.71, p1_gap 0.21, n_ge50 0.04, sup_best 0.02.
+- Holdout: F0.5 0.9580 (v002 0.9545); India 0.9405, US 0.9696; precision 0.988, recall 0.920; singleton acc 0.963.
+  Regression: 1-match S1 F0.5 0.8565 (v002 0.8784) -> no other confident candidates means no support signal.
+- Test: avg matches France 3.29 / India 3.19 / US 3.40; empty 5.6% / 7.1% / 6.1%.
+- Decision tuned on the coarse 0.05 grid only (fine 0.01 grid added to matcher.tune() after this run).
 
 ## Planned
 - Diagnose remaining India blocking misses (v002 recall India 0.9475 vs US 0.9812).

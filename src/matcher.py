@@ -98,12 +98,22 @@ def macro_f05(d, n_true):
 
 
 def tune(c, n_true):
-    grid = np.round(np.arange(0.20, 0.96, 0.05), 2)
-    res = []
-    for t in grid:
-        for tt in grid[grid >= t]:
-            res.append((macro_f05(decide(c, t, tt), n_true), float(t), float(tt)))
+    """Coarse grid (0.05) then fine grid (0.01) within +-0.05 of the coarse winner."""
+    def search(ts, tops_fn):
+        out = []
+        for t in ts:
+            for tt in tops_fn(t):
+                out.append((macro_f05(decide(c, t, tt), n_true), float(t), float(tt)))
+        return out
+
+    coarse = np.round(np.arange(0.20, 0.96, 0.05), 2)
+    res = search(coarse, lambda t: coarse[coarse >= t])
     res.sort(reverse=True)
+    _, t0, tt0 = res[0]
+    fine_t = np.round(np.arange(max(0.05, t0 - 0.05), min(0.99, t0 + 0.05) + 1e-9, 0.01), 2)
+    fine_tt = np.round(np.arange(max(0.05, tt0 - 0.05), min(0.99, tt0 + 0.05) + 1e-9, 0.01), 2)
+    res += search(fine_t, lambda t: fine_tt[fine_tt >= t])
+    res = sorted(set(res), reverse=True)
     print("  top decision settings (OOF F0.5, t, t_top):")
     for r in res[:5]:
         print(f"    {r[0]:.4f}  t={r[1]:.2f}  t_top={r[2]:.2f}")

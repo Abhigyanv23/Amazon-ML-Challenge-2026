@@ -1,0 +1,35 @@
+{
+  "stage1": "v002",
+  "t": 0.65,
+  "t_top": 0.65,
+  "oof_F0.5": 0.9564998662304885,
+  "features": [
+    "k_size",
+    "sup_name_max",
+    "sup_nos_max",
+    "sup_addr_max",
+    "sup_num_max",
+    "sup_zip_max",
+    "sup_state_max",
+    "sup_name_wmean",
+    "sup_addr_wmean",
+    "sup_best",
+    "sup_strong",
+    "p1",
+    "p1_rank",
+    "p1_gap",
+    "p1_second",
+    "n_ge50",
+    "n_ge30",
+    "p1_sum",
+    "n_cands",
+    "is_s3"
+  ],
+  "iters": [
+    122,
+    173,
+    196
+  ],
+  "M_TOP": 6,
+  "P_MIN": 0.3
+}
