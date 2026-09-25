@@ -1,0 +1,48 @@
+{
+  "n_s1": 441364,
+  "n_true_pairs": 1527218,
+  "k5": {
+    "candidate_recall": 0.8384035546988052,
+    "oracle_F0.5": 0.9530786599832531,
+    "avg_cands": 5.0,
+    "total_pairs": 2206820
+  },
+  "k10": {
+    "candidate_recall": 0.9282564768094667,
+    "oracle_F0.5": 0.9734393471069291,
+    "avg_cands": 9.999959217335352,
+    "total_pairs": 4413622
+  },
+  "k20": {
+    "candidate_recall": 0.9483885077310509,
+    "oracle_F0.5": 0.9801124834806733,
+    "avg_cands": 19.99967147297922,
+    "total_pairs": 8827135
+  },
+  "k30": {
+    "candidate_recall": 0.9555315613095183,
+    "oracle_F0.5": 0.9826430698301966,
+    "avg_cands": 29.99894418212632,
+    "total_pairs": 13240454
+  },
+  "k50": {
+    "candidate_recall": 0.962311209008799,
+    "oracle_F0.5": 0.9851061073662076,
+    "avg_cands": 49.99485911855067,
+    "total_pairs": 22065931
+  },
+  "missed_pairs_at_max_k": 57559,
+  "missed_due_to_state_partition": 9622,
+  "params": {
+    "split": "train",
+    "s1_set": "holdout",
+    "sample": 0,
+    "k": 50,
+    "max_df": 0.02,
+    "w_name": 1.0,
+    "w_addr": 1.0,
+    "w_num": 1.0,
+    "threads": 16,
+    "tag": "v001"
+  }
+}

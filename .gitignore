@@ -9,6 +9,8 @@ __pycache__/
 *.pyc
 
 # Large generated artifacts
+experiments/cache/
 models/
+*.parquet
 *.tsv
 !requirements.txt

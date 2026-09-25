@@ -56,9 +56,7 @@ def raw_line_count(path):
 
 
 def read_tsv(path, quote_none=True):
-    """dtype=str + keep_default_na=False so nothing silently becomes NaN
-    (e.g. a business literally named 'NA', or empty matched_entity_ids)."""
-    bad = []
+    """Fast C parser. Bad lines are warned about and skipped."""
     df = pd.read_csv(
         path,
         sep="\t",
@@ -66,10 +64,10 @@ def read_tsv(path, quote_none=True):
         keep_default_na=False,
         encoding="utf-8-sig",
         quoting=csv.QUOTE_NONE if quote_none else csv.QUOTE_MINIMAL,
-        engine="python",
-        on_bad_lines=lambda line: bad.append(line) or None,
+        engine="c",
+        on_bad_lines="warn",
     )
-    return df, bad
+    return df, []
 
 
 # ---------------------------------------------------------------- 1
@@ -206,7 +204,8 @@ def section_gt(dfs):
     print(f"    train_source1 ids missing from GT       : {int((~s1.entity_id.isin(gt['source1_entity_id'])).sum())}")
     print(f"    duplicate ids inside a GT list          : {int(sum(len(l) - len(set(l)) for l in gt['ids']))}")
     print(f"    matched ids with non S2-/S3- prefix     : {sum(not i.startswith(('S2-', 'S3-')) for i in all_ids)}")
-    print(f"    matched ids not found in S2/S3 files    : {sum(i not in set(other.entity_id) for i in all_ids)}")
+    other_ids = set(other.entity_id)
+    print(f"    matched ids not found in S2/S3 files    : {sum(i not in other_ids for i in all_ids)}")
     cnt = Counter(all_ids)
     multi = sum(1 for v in cnt.values() if v > 1)
     print(f"    S2/S3 ids matched to >1 S1              : {multi}   (0 => each S2/S3 record belongs to at most one S1)")
@@ -219,6 +218,7 @@ def section_gt(dfs):
     pairs = gt[["source1_entity_id", "ids"]].explode("ids").dropna()
     pairs.columns = ["s1", "other"]
     pairs = pairs[pairs.s1.isin(s1.entity_id) & pairs.other.isin(other.entity_id)]
+    pairs = pairs.sample(n=min(len(pairs), 300_000), random_state=0).reset_index(drop=True)
     a = s1.set_index("entity_id").loc[pairs.s1].reset_index(drop=True)
     b = other.set_index("entity_id").loc[pairs.other].reset_index(drop=True)
     P = len(pairs)
