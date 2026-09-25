@@ -5,6 +5,7 @@ LightGBM pair classifier + decision logic tuned for per-entity macro F0.5.
   python src/matcher.py train   --tag v001 --k 20   # train-fold candidates only; OOF-tuned decision
   python src/matcher.py holdout --tag v001 --k 20   # score untouched holdout
   python src/matcher.py test    --tag v001 --k 20   # write output/*.tsv
+  --cand-tag reuses another version's blocking candidates (e.g. --tag v004s1 --cand-tag v002)
 
 Decision: keep pair if p >= t; each candidate goes to at most one S1 (highest p);
 an S1 keeps matches only if its best p >= t_top (singleton gate).
@@ -135,7 +136,7 @@ def to_map(df):
 
 # ------------------------------------------------------------------ modes
 def run_train(a, workers):
-    c = load_cands("train", "train", a.tag, a.k)
+    c = load_cands("train", "train", a.cand_tag or a.tag, a.k)
     scope = c.s1_id.unique()
     if set(scope) & set(load_split_ids("holdout")):
         raise SystemExit("[STOP] holdout IDs found in training candidates")
@@ -185,7 +186,7 @@ def load_model(tag):
 
 def run_holdout(a, workers):
     booster, dec = load_model(a.tag)
-    c = load_cands("train", "holdout", a.tag, a.k)
+    c = load_cands("train", "holdout", a.cand_tag or a.tag, a.k)
     c = predict(FeatureBuilder("train"), c, booster, dec["features"], workers)
     save_p(c, "train", "holdout", a.tag)
     d = decide(c, dec["t"], dec["t_top"])
@@ -210,7 +211,7 @@ def run_holdout(a, workers):
 
 def run_test(a, workers):
     booster, dec = load_model(a.tag)
-    c = load_cands("test", "all", a.tag, a.k)
+    c = load_cands("test", "all", a.cand_tag or a.tag, a.k)
     c = predict(FeatureBuilder("test"), c, booster, dec["features"], workers)
     save_p(c, "test", "all", a.tag)
     d = decide(c, dec["t"], dec["t_top"])
@@ -237,6 +238,7 @@ def main():
     ap.add_argument("mode", choices=["train", "holdout", "test"])
     ap.add_argument("--tag", default="v001")
     ap.add_argument("--k", type=int, default=20)
+    ap.add_argument("--cand-tag", default=None, help="blocking tag to reuse (default: --tag)")
     ap.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 1))
     a = ap.parse_args()
     t = time.time()

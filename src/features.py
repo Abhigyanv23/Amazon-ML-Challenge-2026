@@ -1,8 +1,15 @@
 """
-src/features.py  (v2: + zip_eq, b_state_inferred, n_name_close; passes through all blk_* columns)
+src/features.py  (v3)
+v2: + zip_eq, b_state_inferred, n_name_close; passes through all blk_* columns
+v3: + IDF-weighted name token alignment, name specificity (name counts across S1/pool),
+      house-number edit/numeric distance, address word overlap without numbers,
+      character 2/3-gram cosine for name and address. IDF computed from the split's own pool (no labels).
 Pair features for (S1, candidate). Inputs: normalized caches + candidate table
 (s1_id, cand_id, blk_*). No labels are used. No country feature (France is unseen in train).
 """
+import math
+from collections import Counter
+
 import numpy as np
 import pandas as pd
 from rapidfuzz import fuzz
@@ -20,7 +27,12 @@ PAIR_FEATS = [
     "addr_ratio", "addr_tset", "addr_jac", "addr_len_ratio",
     "num_jac", "num_first_eq", "num_a_in_b",
     "state_eq", "zip_eq",
+    # v3
+    "idf_match_a", "idf_match_b", "idf_matched_sum", "idf_b_total", "unmatched_a", "unmatched_b",
+    "hn_edit", "hn_logdiff", "hn_len_eq", "addr_word_jac",
+    "name_cos2", "name_cos3", "addr_cos3",
 ]
+MAX_IDF = 16.0
 
 
 def _jac(a, b):
@@ -28,9 +40,21 @@ def _jac(a, b):
     return len(a & b) / len(u) if u else 0.0
 
 
+def _ngrams(s, n):
+    s = "#" + s + "#"
+    return Counter(s[i:i + n] for i in range(len(s) - n + 1)) if len(s) >= n else Counter()
+
+
+def _cos(ca, cb):
+    if not ca or not cb:
+        return -1.0
+    dot = sum(v * cb.get(k, 0) for k, v in ca.items())
+    return dot / math.sqrt(sum(v * v for v in ca.values()) * sum(v * v for v in cb.values()))
+
+
 def _pair_feats(a, b):
-    ac, an, al, aa, anum, ast, az = a
-    bc, bn, bl, ba, bnum, bst, bz = b
+    ac, an, al, aa, anum, ast, az, aidf = a
+    bc, bn, bl, ba, bnum, bst, bz, bidf = b
     at, bt = ac.split(), bc.split()
     f = [
         float(ac == bc), float(an == bn),
@@ -55,6 +79,32 @@ def _pair_feats(a, b):
         f += [-1.0, -1.0, -1.0]
     f.append(-1.0 if not (ast and bst) else float(ast == bst))
     f.append(-1.0 if not (az and bz) else float(bool(set(az.split()) & set(bz.split()))))
+
+    # v3: IDF-weighted name alignment
+    wa = dict(zip(at, aidf))
+    wb = dict(zip(bt, bidf))
+    common = set(wa) & set(wb)
+    ta, tb = sum(wa.values()), sum(wb.values())
+    ms = sum(wa[x] for x in common)
+    f += [ms / ta if ta else 0.0, ms / tb if tb else 0.0, ms, tb,
+          float(len(set(wa) - common)), float(len(set(wb) - common))]
+    # v3: house number (first extracted number)
+    if na and nb:
+        ha, hb = na[0], nb[0]
+        f += [float(Levenshtein.distance(ha, hb)),
+              math.log1p(abs(int(ha[:9]) - int(hb[:9]))), float(len(ha) == len(hb))]
+    else:
+        f += [-1.0, -1.0, -1.0]
+    # v3: address words without numbers
+    if aa and ba:
+        wa_ = {x for x in aa.split() if not any(ch.isdigit() for ch in x)}
+        wb_ = {x for x in ba.split() if not any(ch.isdigit() for ch in x)}
+        f.append(_jac(wa_, wb_) if (wa_ or wb_) else -1.0)
+    else:
+        f.append(-1.0)
+    # v3: character n-gram cosines
+    f += [_cos(_ngrams(an, 2), _ngrams(bn, 2)), _cos(_ngrams(an, 3), _ngrams(bn, 3)),
+          _cos(_ngrams(aa.replace(" ", ""), 3), _ngrams(ba.replace(" ", ""), 3)) if aa and ba else -1.0]
     return f
 
 
@@ -90,14 +140,29 @@ class FeatureBuilder:
         self.pool_nonlatin = self.pool.name_nonlatin.to_numpy(np.float32)
         self.pool_blank = self.pool.addr_blank.to_numpy(np.float32)
         self.pool_state_inferred = (self.pool.addr_state_src.to_numpy() == 2).astype(np.float32)
+        # v3: name-token IDF from the pool (document frequency), no labels
+        df = Counter()
+        for x in self.pool.name_core:
+            df.update(set(x.split()))
+        n = len(self.pool)
+        self.idf = {t: math.log((1 + n) / (1 + c)) + 1.0 for t, c in df.items()}
+        # v3: name specificity across files (how many S1 share b's name / how many pool records share a's name)
+        s1_counts = self.s1.name_core.value_counts()
+        pool_counts = self.pool.name_core.value_counts()
+        self.b_name_in_s1 = np.log1p(self.pool.name_core.map(s1_counts).fillna(0).to_numpy(np.float32))
+        self.a_name_in_pool = np.log1p(self.s1.name_core.map(pool_counts).fillna(0).to_numpy(np.float32))
+
+    def _with_idf(self, rows):
+        idf, mx = self.idf, MAX_IDF
+        return [r + (tuple(idf.get(t, mx) for t in r[0].split()),) for r in rows]
 
     def build(self, c, workers=None, sub=20_000):
         ps = self.s1_idx.get_indexer(c.s1_id)
         pp = self.pool_idx.get_indexer(c.cand_id)
         if (ps < 0).any() or (pp < 0).any():
             raise ValueError("candidate IDs not found in normalized caches")
-        A = list(self.s1[STR_COLS].take(ps).itertuples(index=False, name=None))
-        B = list(self.pool[STR_COLS].take(pp).itertuples(index=False, name=None))
+        A = self._with_idf(self.s1[STR_COLS].take(ps).itertuples(index=False, name=None))
+        B = self._with_idf(self.pool[STR_COLS].take(pp).itertuples(index=False, name=None))
         jobs = [(A[i:i + sub], B[i:i + sub]) for i in range(0, len(A), sub)]
         parts = workers.map(_feat_chunk, jobs) if workers else [_feat_chunk(j) for j in jobs]
         X = pd.DataFrame(np.vstack(parts), columns=PAIR_FEATS)
@@ -114,6 +179,9 @@ class FeatureBuilder:
         X["b_addr_blank"] = self.pool_blank[pp]
         X["b_state_inferred"] = self.pool_state_inferred[pp]
         X["n_name_close"] = (X.name_tset >= 0.9).groupby(g).transform("sum").astype(np.float32)
+        X["b_name_in_s1"] = self.b_name_in_s1[pp]
+        X["a_name_in_pool"] = self.a_name_in_pool[ps]
+        X["idf_match_a_rank"] = X.groupby(g).idf_match_a.rank(ascending=False, method="min").astype(np.float32)
         X["comb"] = 0.5 * X.name_tset + 0.5 * X.addr_tset.clip(lower=0)
         for col in ["name_tset", "nospace_jw", "addr_tset", "comb"]:
             X[f"{col}_rank"] = X.groupby(g)[col].rank(ascending=False, method="min").astype(np.float32)

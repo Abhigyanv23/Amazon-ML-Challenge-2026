@@ -11,6 +11,8 @@ Inputs: stage-1 probabilities written by matcher.py (experiments/cache/p1_*_<sta
   python src/stage2.py holdout --stage1 v002 --tag v003
   python src/stage2.py test    --stage1 v002 --tag v003
 Holdout labels are never used for training or tuning.
+v004: optional fallback — S1 groups with <= FB_MAX stage-1 probabilities >= P_MIN use the stage-1
+probability instead of stage 2 (stage 2 has no support signal there). Chosen on OOF only.
 """
 import argparse
 import json
@@ -32,6 +34,7 @@ from validate_local import print_metrics, score
 
 POOL_COLS = ["entity_id", "name_core", "name_nospace", "addr_norm", "addr_nums", "addr_zip", "addr_state"]
 M_TOP, P_MIN = 6, 0.3
+FB_MAX = 1
 SUP_FEATS = ["k_size", "sup_name_max", "sup_nos_max", "sup_addr_max", "sup_num_max", "sup_zip_max",
              "sup_state_max", "sup_name_wmean", "sup_addr_wmean", "sup_best", "sup_strong"]
 CHUNK = 1_000_000
@@ -111,6 +114,12 @@ class Stage2Builder:
         return X.astype(np.float32)
 
 
+def apply_fallback(c, p2):
+    """c has stage-1 p in column p1; returns final probabilities."""
+    n_conf = (c.p1 >= P_MIN).groupby(c.s1_id).transform("sum").to_numpy()
+    return np.where(n_conf <= FB_MAX, c.p1.to_numpy(), p2).astype(np.float32)
+
+
 def load_p1(split, s1set, stage1):
     c = pd.read_parquet(p1_path(split, s1set, stage1))
     return c.sort_values(["s1_id", "p"], ascending=[True, False], kind="stable").reset_index(drop=True)
@@ -150,9 +159,17 @@ def run_train(a, workers):
     c1 = c.copy()
     print("stage-1 decision on same rows (reference):")
     tune(c1, n_true)
+    c["p1"] = c.p
     c["p"] = oof
     print("stage-2:")
-    best_f, t, t_top = tune(c, n_true)
+    best_plain = tune(c, n_true)
+    cf = c.copy()
+    cf["p"] = apply_fallback(c, oof)
+    print(f"stage-2 with fallback to stage-1 when <= {FB_MAX} candidate has p1 >= {P_MIN}:")
+    best_fb = tune(cf, n_true)
+    fallback = best_fb[0] > best_plain[0]
+    best_f, t, t_top = best_fb if fallback else best_plain
+    print(f"  -> using {'FALLBACK' if fallback else 'plain stage 2'} (OOF {best_f:.4f})")
 
     final = lgb.train(PARAMS, lgb.Dataset(X, y), int(np.mean(iters) * 1.1))
     os.makedirs(os.path.join("models", a.tag), exist_ok=True)
@@ -162,6 +179,8 @@ def run_train(a, workers):
     os.makedirs(os.path.join("experiments", a.tag), exist_ok=True)
     with open(os.path.join("experiments", a.tag, "decision.json"), "w", encoding="utf-8") as f:
         json.dump({"stage1": a.stage1, "t": t, "t_top": t_top, "oof_F0.5": best_f, "features": feats,
+                   "fallback": bool(fallback), "FB_MAX": FB_MAX,
+                   "oof_plain": best_plain[0], "oof_fallback": best_fb[0],
                    "iters": iters, "M_TOP": M_TOP, "P_MIN": P_MIN}, f, indent=2)
     print(f"saved models/{a.tag}/lgbm_stage2.txt and experiments/{a.tag}/decision.json")
 
@@ -176,7 +195,13 @@ def _predict(a, split, s1set, workers):
     for ch in iter_chunks(c, CHUNK):
         ps.append(booster.predict(sb.build(ch, workers)[dec["features"]].to_numpy(np.float32)))
         print(f"  stage2 predicted {sum(len(x) for x in ps)}/{len(c)}")
-    c["p"] = np.concatenate(ps).astype(np.float32)
+    p2 = np.concatenate(ps).astype(np.float32)
+    if dec.get("fallback"):
+        c["p1"] = c.p
+        c["p"] = apply_fallback(c, p2)
+        c = c.drop(columns="p1")
+    else:
+        c["p"] = p2
     return c, decide(c, dec["t"], dec["t_top"]), dec
 
 
