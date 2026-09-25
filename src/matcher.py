@@ -34,7 +34,9 @@ CHUNK = 1_000_000
 
 def load_cands(split, s1set, tag, k):
     c = pd.read_parquet(os.path.join(CACHE_DIR, f"cand_{split}_{s1set}_{tag}.parquet"))
-    c = c[c["rank"] <= k].rename(columns={"score": "blk_score", "rank": "blk_rank"})
+    if "blk_tri_rank" not in c.columns:          # v001 single-channel file: cut to top-k
+        c = c[c["rank"] <= k]
+    c = c.rename(columns={"score": "blk_score", "rank": "blk_rank"})
     return c.sort_values(["s1_id", "blk_rank"]).reset_index(drop=True)
 
 

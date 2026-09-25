@@ -1,0 +1,36 @@
+{
+  "n_s1": 300000,
+  "n_true_pairs": 1038961,
+  "candidate_recall_union": 0.9676898362883689,
+  "oracle_F0.5": 0.9886491905242313,
+  "avg_cands": 25.586683333333333,
+  "total_pairs": 7676005,
+  "recall_word": 0.9583949734398115,
+  "recall_tri": 0.6946064385477414,
+  "recall_nl": 0.05946710223001633,
+  "only_tri": 4956,
+  "only_nl": 4701,
+  "recall_word@5": 0.8179816181743107,
+  "recall_word@10": 0.9261271597297684,
+  "recall_word@20": 0.9583949734398115,
+  "recall_by_country": {
+    "india": 0.9483,
+    "us": 0.9808
+  },
+  "missed_pairs": 33569,
+  "missed_due_to_state_block": 918,
+  "params": {
+    "split": "train",
+    "s1_set": "train",
+    "sample": 300000,
+    "k": 20,
+    "k_tri": 10,
+    "k_nl": 5,
+    "max_df": 0.02,
+    "w_name": 1.0,
+    "w_addr": 1.0,
+    "w_num": 1.0,
+    "threads": 16,
+    "tag": "v002"
+  }
+}

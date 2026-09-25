@@ -1,15 +1,19 @@
 """
-src/blocking.py
-Candidate generation: per (country, state) block, score S2/S3 records by cosine of
-IDF-weighted token vectors (name_core words, address words, address numbers),
-keep top-k per S1. Pool records without a state join every block of their country.
+src/blocking.py  (v2)
+Candidate generation per (country, state-block). Pool records without a state join every
+block of their country. Three channels, unioned:
+  word : cosine of IDF-weighted tokens (name words, no-space name, address words, numbers), top --k
+  tri  : cosine of IDF-weighted character trigrams of the no-space name (typos), top --k-tri
+  nl   : address-only cosine against pool records with NON-LATIN names, top --k-nl
+State blocks merged where source data mixes labels (India: AP+TG, JK+LA).
 No labels are used; labels are only read afterwards to MEASURE recall.
 
 Usage (repo root):
-  python src/blocking.py --split train --s1-set holdout --k 50 --tag v001      # measure recall
-  python src/blocking.py --split train --s1-set train --sample 300000 --k 30 --tag v001   # model training candidates
-  python src/blocking.py --split test --k 30 --tag v001
-Output: experiments/cache/cand_<split>_<s1set>_<tag>.parquet  (s1_id, cand_id, score, rank)
+  python src/blocking.py --split train --s1-set holdout --tag v002
+  python src/blocking.py --split train --s1-set train --sample 300000 --tag v002
+  python src/blocking.py --split test --tag v002
+Output: experiments/cache/cand_<split>_<s1set>_<tag>.parquet
+  columns: s1_id, cand_id, score, rank (word channel; 0 / k+1 if absent), blk_tri, blk_tri_rank, blk_nl, blk_nl_rank
 """
 import argparse
 import json
@@ -29,17 +33,41 @@ try:
 except ImportError:
     sp_matmul_topn = None
 
-COLS = ["entity_id", "country_key", "addr_state", "name_core", "addr_norm", "addr_nums"]
+COLS = ["entity_id", "country_key", "addr_state", "name_core", "name_nospace", "name_nonlatin",
+        "addr_norm", "addr_nums"]
+BLOCK_MERGE = {"india": {"tg": "ap", "la": "jk"}}
+
+
+def block_key(ck, st):
+    return BLOCK_MERGE.get(ck, {}).get(st, st)
 
 
 def make_docs(df):
     docs = []
-    for nc, an, nums in zip(df.name_core, df.addr_norm, df.addr_nums):
+    for nc, ns, an, nums in zip(df.name_core, df.name_nospace, df.addr_norm, df.addr_nums):
         t = ["n_" + x for x in nc.split()]
+        if ns:
+            t.append("s_" + ns)
         t += ["a_" + x for x in an.split() if not x.isdigit()]
         t += ["d_" + x for x in nums.split()]
         docs.append(t)
     return docs
+
+
+def make_tri_docs(df):
+    docs = []
+    for ns, nl in zip(df.name_nospace, df.name_nonlatin):
+        if nl or not ns:
+            docs.append([])
+            continue
+        x = "#" + ns + "#"
+        docs.append([x[i:i + 3] for i in range(len(x) - 2)])
+    return docs
+
+
+def make_addr_docs(df):
+    return [["a_" + x for x in an.split() if not x.isdigit()] + ["d_" + x for x in nums.split()]
+            for an, nums in zip(df.addr_norm, df.addr_nums)]
 
 
 def _identity(x):
@@ -68,79 +96,122 @@ def topk(A, BT, k, n_threads):
                          shape=(A.shape[0], BT.shape[1]))
 
 
-def block_candidates(s_blk, p_blk, k, max_df, w, n_threads):
+def _vectorize(p_docs, s_docs, max_df, w=None):
     vec = CountVectorizer(analyzer=_identity, binary=True, dtype=np.float32)
-    B = vec.fit_transform(make_docs(p_blk))
+    B = vec.fit_transform(p_docs)
     N = B.shape[0]
     df = np.asarray(B.sum(axis=0)).ravel()
-    idf = np.log(N / df)
-    keep = df <= max(max_df * N, 100)                    # drop very common tokens
-    feats = vec.get_feature_names_out()
-    pref = np.array([f[0] for f in feats])
-    gw = np.where(pref == "n", w["name"], np.where(pref == "a", w["addr"], w["num"]))
-    D = sp.diags((idf * gw * keep).astype(np.float32))
+    idf = np.log((1 + N) / (1 + df)) + 1.0          # smoothed: stays >0 in tiny pools
+    keep = df <= max(max_df * N, 100)
+    colw = idf * keep
+    if w is not None:
+        pref = np.array([f[0] for f in vec.get_feature_names_out()])
+        colw = colw * np.select([pref == "n", pref == "s", pref == "a"], [w["name"], w["name"], w["addr"]], w["num"])
+    D = sp.diags(colw.astype(np.float32))
     B = normalize(B @ D, norm="l2", copy=False)
-    A = normalize(vec.transform(make_docs(s_blk)) @ D, norm="l2", copy=False)
-    M = topk(A.tocsr(), B.T.tocsr(), k, n_threads).tocoo()
+    A = normalize(vec.transform(s_docs) @ D, norm="l2", copy=False)
+    return A.tocsr(), B.T.tocsr()
+
+
+def _channel(s_blk, p_blk, s_docs, p_docs, k, max_df, n_threads, col, w=None):
+    if len(p_blk) == 0 or k <= 0 or not any(p_docs):
+        return None
+    A, BT = _vectorize(p_docs, s_docs, max_df, w)
+    M = topk(A, BT, k, n_threads).tocoo()
     return pd.DataFrame({"s1_id": s_blk.entity_id.to_numpy()[M.row],
                          "cand_id": p_blk.entity_id.to_numpy()[M.col],
-                         "score": M.data.astype(np.float32)})
+                         col: M.data.astype(np.float32)})
 
 
-def run_blocking(split, s1_ids, k, max_df, w, n_threads):
+def block_candidates(s_blk, p_blk, a, w):
+    out = {}
+    out["score"] = _channel(s_blk, p_blk, make_docs(s_blk), make_docs(p_blk), a.k, a.max_df, a.threads, "score", w)
+    out["blk_tri"] = _channel(s_blk, p_blk, make_tri_docs(s_blk), make_tri_docs(p_blk), a.k_tri, a.max_df,
+                              a.threads, "blk_tri")
+    p_nl = p_blk[p_blk.name_nonlatin == 1]
+    out["blk_nl"] = _channel(s_blk, p_nl, make_addr_docs(s_blk), make_addr_docs(p_nl), a.k_nl, a.max_df,
+                             a.threads, "blk_nl")
+    return out
+
+
+def run_blocking(split, s1_ids, a, w):
     pool = pd.concat([load_normalized(split, 2, COLS), load_normalized(split, 3, COLS)], ignore_index=True)
     s1 = load_normalized(split, 1, COLS)
     if s1_ids is not None:
         s1 = s1[s1.entity_id.isin(set(s1_ids))]
-    parts = []
+    pool["bk"] = [block_key(c, s) for c, s in zip(pool.country_key, pool.addr_state)]
+    s1["bk"] = [block_key(c, s) for c, s in zip(s1.country_key, s1.addr_state)]
+    parts = {"score": [], "blk_tri": [], "blk_nl": []}
     for ck, s_c in s1.groupby("country_key"):
         t = time.time()
         p_c = pool[pool.country_key == ck]
-        groups = p_c.groupby("addr_state").indices
+        groups = p_c.groupby("bk").indices
         nostate = p_c.iloc[groups.get("", [])]
-        for st, s_blk in s_c.groupby("addr_state"):
-            if st:
-                p_blk = pd.concat([p_c.iloc[groups[st]], nostate]) if st in groups else nostate
+        for bk, s_blk in s_c.groupby("bk"):
+            if bk:
+                p_blk = pd.concat([p_c.iloc[groups[bk]], nostate]) if bk in groups else nostate
             else:
                 p_blk = p_c
-            if len(p_blk):
-                parts.append(block_candidates(s_blk, p_blk, k, max_df, w, n_threads))
+            for col, df in block_candidates(s_blk, p_blk, a, w).items():
+                if df is not None:
+                    parts[col].append(df)
         print(f"  {ck}: {len(s_c)} S1 vs {len(p_c)} pool in {time.time() - t:.0f}s")
-    c = pd.concat(parts, ignore_index=True)
-    c = c.sort_values(["s1_id", "score"], ascending=[True, False])
-    c["rank"] = (c.groupby("s1_id").cumcount() + 1).astype("int16")
-    return c, pool
+
+    c = None
+    for col, lim in [("score", a.k), ("blk_tri", a.k_tri), ("blk_nl", a.k_nl)]:
+        if not parts[col]:
+            continue
+        d = pd.concat(parts[col], ignore_index=True)
+        d = d.sort_values(["s1_id", col], ascending=[True, False])
+        rk = "rank" if col == "score" else f"{col}_rank"
+        d[rk] = (d.groupby("s1_id").cumcount() + 1).astype("int16")
+        c = d if c is None else c.merge(d, on=["s1_id", "cand_id"], how="outer")
+    for col, rk, lim in [("score", "rank", a.k), ("blk_tri", "blk_tri_rank", a.k_tri), ("blk_nl", "blk_nl_rank", a.k_nl)]:
+        if col not in c:
+            c[col], c[rk] = 0.0, lim + 1
+        c[col] = c[col].fillna(0).astype(np.float32)
+        c[rk] = c[rk].fillna(lim + 1).astype("int16")
+    c = c.sort_values(["s1_id", "rank", "blk_tri_rank"]).reset_index(drop=True)
+    return c, pool, s1
 
 
-def evaluate(c, s1_ids, pool, ks):
+def evaluate(c, s1_ids, pool, s1, a):
     gt = load_ground_truth()
     gt = gt[gt.source1_entity_id.isin(set(s1_ids))]
     n_true = gt.set_index("source1_entity_id").matched_ids.map(len)
     tp = gt[["source1_entity_id", "matched_ids"]].explode("matched_ids").dropna()
     tp.columns = ["s1_id", "cand_id"]
-    tp = tp.merge(c[["s1_id", "cand_id", "rank"]], how="left")
+    tp = tp.merge(c[["s1_id", "cand_id", "rank", "blk_tri_rank", "blk_nl_rank"]], how="left")
+    found = tp["rank"].notna()
+    by_w = tp["rank"].le(a.k)
+    by_t = tp["blk_tri_rank"].le(a.k_tri)
+    by_n = tp["blk_nl_rank"].le(a.k_nl)
     n_c = c.groupby("s1_id").size().reindex(n_true.index, fill_value=0)
-    res = {"n_s1": int(len(n_true)), "n_true_pairs": int(len(tp))}
-    print(f"\n  {'k':>4} {'cand_recall':>12} {'oracle_F0.5':>12} {'avg_cands':>10} {'total_pairs':>12}")
-    for k in ks:
-        hit = tp["rank"].le(k)
-        rec = float(hit.mean())
-        tp_k = hit.groupby(tp.s1_id).sum().reindex(n_true.index, fill_value=0)
-        r = np.where(n_true > 0, tp_k / n_true.clip(lower=1), 1.0)
-        f = np.where(n_true > 0, np.where(tp_k > 0, 1.25 * r / (0.25 + r), 0.0), 1.0)
-        avg = float(np.minimum(n_c, k).mean())
-        res[f"k{k}"] = {"candidate_recall": rec, "oracle_F0.5": float(f.mean()), "avg_cands": avg,
-                        "total_pairs": int(np.minimum(n_c, k).sum())}
-        print(f"  {k:>4} {rec:>12.4f} {f.mean():>12.4f} {avg:>10.1f} {int(np.minimum(n_c, k).sum()):>12}")
-
-    miss = tp[tp["rank"].isna()]
-    st = pool.set_index("entity_id").addr_state
-    s1st = load_normalized("train", 1, ["entity_id", "addr_state"]).set_index("entity_id").addr_state
-    ms, mc = s1st.reindex(miss.s1_id).to_numpy(), st.reindex(miss.cand_id).to_numpy()
-    lost_state = int(((mc != "") & (mc != ms)).sum())
-    res["missed_pairs_at_max_k"] = int(len(miss))
-    res["missed_due_to_state_partition"] = lost_state
-    print(f"\n  missed at k={max(ks)}: {len(miss)} pairs, of which {lost_state} are in a different state block")
+    tp_k = found.groupby(tp.s1_id).sum().reindex(n_true.index, fill_value=0)
+    r = np.where(n_true > 0, tp_k / n_true.clip(lower=1), 1.0)
+    f = np.where(n_true > 0, np.where(tp_k > 0, 1.25 * r / (0.25 + r), 0.0), 1.0)
+    res = {
+        "n_s1": int(len(n_true)), "n_true_pairs": int(len(tp)),
+        "candidate_recall_union": float(found.mean()),
+        "oracle_F0.5": float(f.mean()),
+        "avg_cands": float(n_c.mean()), "total_pairs": int(len(c)),
+        "recall_word": float(by_w.mean()), "recall_tri": float(by_t.mean()), "recall_nl": float(by_n.mean()),
+        "only_tri": int((by_t & ~by_w & ~by_n).sum()), "only_nl": int((by_n & ~by_w & ~by_t).sum()),
+    }
+    for k in (5, 10, 20):
+        if k <= a.k:
+            res[f"recall_word@{k}"] = float(tp["rank"].le(k).mean())
+    cn = s1.set_index("entity_id").country_key
+    ctry = cn.reindex(tp.s1_id).to_numpy()
+    res["recall_by_country"] = found.groupby(ctry).mean().round(4).to_dict()
+    miss = tp[~found]
+    pbk = pool.set_index("entity_id").bk
+    sbk = s1.set_index("entity_id").bk
+    mc, ms = pbk.reindex(miss.cand_id).to_numpy(), sbk.reindex(miss.s1_id).to_numpy()
+    res["missed_pairs"] = int(len(miss))
+    res["missed_due_to_state_block"] = int(((mc != "") & (mc != ms)).sum())
+    for kk, v in res.items():
+        print(f"  {kk:<28} {v:.4f}" if isinstance(v, float) else f"  {kk:<28} {v}")
     return res
 
 
@@ -149,13 +220,15 @@ def main():
     ap.add_argument("--split", choices=["train", "test"], required=True)
     ap.add_argument("--s1-set", choices=["holdout", "train", "all"], default="all")
     ap.add_argument("--sample", type=int, default=0)
-    ap.add_argument("--k", type=int, default=30)
+    ap.add_argument("--k", type=int, default=20)
+    ap.add_argument("--k-tri", type=int, default=10)
+    ap.add_argument("--k-nl", type=int, default=5)
     ap.add_argument("--max-df", type=float, default=0.02)
     ap.add_argument("--w-name", type=float, default=1.0)
     ap.add_argument("--w-addr", type=float, default=1.0)
     ap.add_argument("--w-num", type=float, default=1.0)
     ap.add_argument("--threads", type=int, default=os.cpu_count())
-    ap.add_argument("--tag", default="v001")
+    ap.add_argument("--tag", default="v002")
     a = ap.parse_args()
     if a.split == "test" and a.s1_set != "all":
         raise SystemExit("test split uses --s1-set all")
@@ -173,14 +246,13 @@ def main():
 
     t = time.time()
     w = {"name": a.w_name, "addr": a.w_addr, "num": a.w_num}
-    c, pool = run_blocking(a.split, s1_ids, a.k, a.max_df, w, a.threads)
+    c, pool, s1 = run_blocking(a.split, s1_ids, a, w)
     out = os.path.join(CACHE_DIR, f"cand_{a.split}_{a.s1_set}_{a.tag}.parquet")
     c.to_parquet(out, index=False)
     print(f"\n{len(c)} candidate pairs in {time.time() - t:.0f}s -> {out}")
 
     if a.split == "train":
-        ks = [k for k in (5, 10, 20, 30, 50, 100) if k <= a.k]
-        res = evaluate(c, s1_ids, pool, ks)
+        res = evaluate(c, s1_ids, pool, s1, a)
         res["params"] = vars(a)
         os.makedirs(os.path.join("experiments", a.tag), exist_ok=True)
         jp = os.path.join("experiments", a.tag, f"blocking_{a.s1_set}.json")

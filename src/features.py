@@ -1,5 +1,5 @@
 """
-src/features.py
+src/features.py  (v2: + zip_eq, b_state_inferred, n_name_close; passes through all blk_* columns)
 Pair features for (S1, candidate). Inputs: normalized caches + candidate table
 (s1_id, cand_id, blk_*). No labels are used. No country feature (France is unseen in train).
 """
@@ -10,8 +10,8 @@ from rapidfuzz.distance import JaroWinkler, Levenshtein
 
 from data_loading import load_normalized
 
-STR_COLS = ["name_core", "name_nospace", "name_legal", "addr_norm", "addr_nums", "addr_state"]
-REC_COLS = ["entity_id"] + STR_COLS + ["name_nonlatin", "addr_blank"]
+STR_COLS = ["name_core", "name_nospace", "name_legal", "addr_norm", "addr_nums", "addr_state", "addr_zip"]
+REC_COLS = ["entity_id"] + STR_COLS + ["name_nonlatin", "addr_blank", "addr_state_src"]
 
 PAIR_FEATS = [
     "name_exact", "nospace_exact", "name_ratio", "name_tset", "name_tsort", "name_partial",
@@ -19,7 +19,7 @@ PAIR_FEATS = [
     "legal_jac",
     "addr_ratio", "addr_tset", "addr_jac", "addr_len_ratio",
     "num_jac", "num_first_eq", "num_a_in_b",
-    "state_eq",
+    "state_eq", "zip_eq",
 ]
 
 
@@ -29,8 +29,8 @@ def _jac(a, b):
 
 
 def _pair_feats(a, b):
-    ac, an, al, aa, anum, ast = a
-    bc, bn, bl, ba, bnum, bst = b
+    ac, an, al, aa, anum, ast, az = a
+    bc, bn, bl, ba, bnum, bst, bz = b
     at, bt = ac.split(), bc.split()
     f = [
         float(ac == bc), float(an == bn),
@@ -54,6 +54,7 @@ def _pair_feats(a, b):
     else:
         f += [-1.0, -1.0, -1.0]
     f.append(-1.0 if not (ast and bst) else float(ast == bst))
+    f.append(-1.0 if not (az and bz) else float(bool(set(az.split()) & set(bz.split()))))
     return f
 
 
@@ -88,6 +89,7 @@ class FeatureBuilder:
         self.pool_freq = np.log1p(self.pool.name_core.map(self.pool.name_core.value_counts()).to_numpy(np.float32))
         self.pool_nonlatin = self.pool.name_nonlatin.to_numpy(np.float32)
         self.pool_blank = self.pool.addr_blank.to_numpy(np.float32)
+        self.pool_state_inferred = (self.pool.addr_state_src.to_numpy() == 2).astype(np.float32)
 
     def build(self, c, workers=None, sub=20_000):
         ps = self.s1_idx.get_indexer(c.s1_id)
@@ -110,6 +112,8 @@ class FeatureBuilder:
         X["b_name_freq"] = self.pool_freq[pp]
         X["b_nonlatin"] = self.pool_nonlatin[pp]
         X["b_addr_blank"] = self.pool_blank[pp]
+        X["b_state_inferred"] = self.pool_state_inferred[pp]
+        X["n_name_close"] = (X.name_tset >= 0.9).groupby(g).transform("sum").astype(np.float32)
         X["comb"] = 0.5 * X.name_tset + 0.5 * X.addr_tset.clip(lower=0)
         for col in ["name_tset", "nospace_jw", "addr_tset", "comb"]:
             X[f"{col}_rank"] = X.groupby(g)[col].rank(ascending=False, method="min").astype(np.float32)

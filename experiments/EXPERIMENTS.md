@@ -26,6 +26,13 @@ Never change more than one major component per version without noting it.
 - Submission day1-sub1: public LB 0.9310 (holdout 0.9481). Country-mix reweighting explains ~0.006;
   implied France F0.5 ~0.87 if India/US match holdout -> France is the main unmeasured gap.
 
+## v002 — normalization v2 + blocking v2
+- Normalization v2: zip split from house numbers; last state component wins; learned component->state fill
+  from same-split S1 (state found: France S2/S3 67%->97%, India 91%->96.5%); FR abbreviations.
+- Blocking v2: word (+nospace token) k=20, trigram name k=10, non-Latin address k=5; AP/TG, JK/LA merged; smoothed IDF.
+  Holdout: recall 0.9677 (v001 0.948), oracle F0.5 0.9886 (0.980), avg cands 25.6; India 0.9475 / US 0.9812;
+  only-trigram 7,058, only-non-Latin 6,733; state-block misses 1,246 (9,622). Runtime 974 s.
+
 ## Planned
 - v002: blocking fixes (nospace token, trigram channel, non-Latin address channel, AP/TG merge,
   last-state-component rule). Requires re-running normalization → blocking → train → holdout.
