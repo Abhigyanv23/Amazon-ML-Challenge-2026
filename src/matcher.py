@@ -32,6 +32,16 @@ PARAMS = dict(objective="binary", learning_rate=0.1, num_leaves=127, min_data_in
 CHUNK = 1_000_000
 
 
+def p1_path(split, s1set, tag):
+    return os.path.join(CACHE_DIR, f"p1_{split}_{s1set}_{tag}.parquet")
+
+
+def save_p(c, split, s1set, tag):
+    cols = [x for x in ["s1_id", "cand_id", "p", "label"] if x in c.columns]
+    c[cols].to_parquet(p1_path(split, s1set, tag), index=False)
+    print(f"  saved probabilities -> {p1_path(split, s1set, tag)}")
+
+
 def load_cands(split, s1set, tag, k):
     c = pd.read_parquet(os.path.join(CACHE_DIR, f"cand_{split}_{s1set}_{tag}.parquet"))
     if "blk_tri_rank" not in c.columns:          # v001 single-channel file: cut to top-k
@@ -140,6 +150,7 @@ def run_train(a, workers):
         iters.append(b.best_iteration)
         print(f"  fold {fold}: best_iter {b.best_iteration} ({time.time() - t:.0f}s)")
     c["p"] = oof
+    save_p(c, "train", "train", a.tag)                  # OOF probabilities (for stage 2)
     best_f, t, t_top = tune(c, n_true)
 
     final = lgb.train(PARAMS, lgb.Dataset(X, y), int(np.mean(iters) * 1.1))
@@ -166,6 +177,7 @@ def run_holdout(a, workers):
     booster, dec = load_model(a.tag)
     c = load_cands("train", "holdout", a.tag, a.k)
     c = predict(FeatureBuilder("train"), c, booster, dec["features"], workers)
+    save_p(c, "train", "holdout", a.tag)
     d = decide(c, dec["t"], dec["t_top"])
 
     ids = load_split_ids("holdout")
@@ -190,6 +202,7 @@ def run_test(a, workers):
     booster, dec = load_model(a.tag)
     c = load_cands("test", "all", a.tag, a.k)
     c = predict(FeatureBuilder("test"), c, booster, dec["features"], workers)
+    save_p(c, "test", "all", a.tag)
     d = decide(c, dec["t"], dec["t_top"])
 
     s1 = load_normalized("test", 1, ["entity_id", "country_key"])
