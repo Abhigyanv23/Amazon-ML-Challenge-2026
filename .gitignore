@@ -1,0 +1,14 @@
+# Competition data - do not push
+dataset/
+
+# Virtual environment
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Large generated artifacts
+models/
+*.tsv
+!requirements.txt
