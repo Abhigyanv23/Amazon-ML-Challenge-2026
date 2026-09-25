@@ -32,6 +32,9 @@ Never change more than one major component per version without noting it.
 - Blocking v2: word (+nospace token) k=20, trigram name k=10, non-Latin address k=5; AP/TG, JK/LA merged; smoothed IDF.
   Holdout: recall 0.9677 (v001 0.948), oracle F0.5 0.9886 (0.980), avg cands 25.6; India 0.9475 / US 0.9812;
   only-trigram 7,058, only-non-Latin 6,733; state-block misses 1,246 (9,622). Runtime 974 s.
+  - Matcher: 300K S1, 7.68M pairs (13.1% positive); OOF F0.5 0.9533 at t=0.70, t_top=0.70.
+- Holdout: F0.5 0.9545 (v001 0.9481); India 0.9358, US 0.9669; precision 0.988, recall 0.905; singleton acc 0.953.
+- Loss split: blocking 0.011, matcher 0.035 -> matcher is now the bottleneck (v003: group-consistency stage 2).
 
 ## Planned
 - v002: blocking fixes (nospace token, trigram channel, non-Latin address channel, AP/TG merge,
