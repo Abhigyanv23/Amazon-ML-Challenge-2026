@@ -111,3 +111,6 @@ Public leaderboard leader (26 Sep): 0.988419.
 - Stage 2 (v006): fallback 1/2/3 OOF 0.9772/0.9770/0.9767 -> FB_MAX=1. Holdout 0.9778 (v005 0.9773);
   precision 0.9945, recall 0.9498; singleton 0.9735; India 0.9720, US 0.9816.
 - Candidates: 10.4/S1 (max 20) vs v005 37.4 (max 6,243): 3.6x smaller at +0.0005 F0.5.
+- Submission day2-sub3 (v006): public LB 0.9652 (v005 0.9683, -0.0031) despite holdout +0.0005.
+  Implied France ~0.902 (v005 ~0.927): pruner trained on India/US labels drops true French candidates.
+- v006fr: hybrid submission — France rows from v005 (unpruned candidates), India/US from v006 (pruned).
