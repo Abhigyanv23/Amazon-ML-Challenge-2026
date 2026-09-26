@@ -10,7 +10,7 @@ Never change more than one major component per version without noting it.
 | v002 | 25 Sep | Normalization v2 (zip, learned state fill) + 3-channel blocking + features v2 | 0.968 | 0.989 | 0.9545 | 0.988 / 0.905 | 0.953 | 0.9436 | day1-sub2 |
 | v003 | 26 Sep | Stage-2 group-consistency rescoring on v002 stage-1 probabilities | 0.968 | 0.989 | 0.9580 | 0.988 / 0.920 | 0.963 | not submitted | v003-holdout-0.9580 |
 | v004 | 26 Sep | Features v3 (IDF alignment, name specificity, house-number distance, n-gram cosine) + stage-2 fallback; v002 candidates | 0.968 | 0.989 | 0.9667 | 0.992 / 0.929 | 0.965 | 0.9550 | day2-sub1 |
-| v005 | 26 Sep | Normalization v3 + blocking v3 (skeleton/address/reverse channels) + features v4 | 0.988 | 0.996 | 0.9773 | 0.994 / 0.951 | 0.970 | TODO | TODO |
+| v005 | 26 Sep | Normalization v3 + blocking v3 (skeleton/address/reverse channels) + features v4 | 0.988 | 0.996 | 0.9773 | 0.994 / 0.951 | 0.970 | 0.9683 | day2-sub2 |
 
 Public leaderboard leader (26 Sep): 0.988419.
 
@@ -89,3 +89,5 @@ Public leaderboard leader (26 Sep): 0.988419.
 - Stage 2 (v005, fallback): OOF 0.9763; holdout 0.9773 (v004 0.9667); India 0.9712 (+0.021), US 0.9813;
   precision 0.994, recall 0.951; 1-match S1 0.926; false-empty 0.0051.
 - Issue: reverse channel lets one S1 collect many candidates (max 6,243; avg 37.4) -> pruner in v006.
+- Submission (day2-sub2): public LB 0.9683 (v004 0.9550, +0.0133; holdout +0.0106).
+  Implied France F0.5 ~0.927 (from ~0.912): first France gain; holdout-LB gap 0.009 (was 0.012).
