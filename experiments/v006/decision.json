@@ -1,0 +1,40 @@
+{
+  "stage1": "v006s1",
+  "t": 0.7,
+  "t_top": 0.7,
+  "oof_F0.5": 0.9771618356437771,
+  "features": [
+    "k_size",
+    "sup_name_max",
+    "sup_nos_max",
+    "sup_addr_max",
+    "sup_num_max",
+    "sup_zip_max",
+    "sup_state_max",
+    "sup_name_wmean",
+    "sup_addr_wmean",
+    "sup_best",
+    "sup_strong",
+    "p1",
+    "p1_rank",
+    "p1_gap",
+    "p1_second",
+    "n_ge50",
+    "n_ge30",
+    "p1_sum",
+    "n_cands",
+    "is_s3"
+  ],
+  "fallback": true,
+  "FB_MAX": 1,
+  "t_blank": 0.75,
+  "oof_plain": 0.9768255650321747,
+  "oof_fallback": 0.9771618356437771,
+  "iters": [
+    115,
+    126,
+    113
+  ],
+  "M_TOP": 6,
+  "P_MIN": 0.3
+}

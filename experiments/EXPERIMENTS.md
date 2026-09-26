@@ -11,6 +11,7 @@ Never change more than one major component per version without noting it.
 | v003 | 26 Sep | Stage-2 group-consistency rescoring on v002 stage-1 probabilities | 0.968 | 0.989 | 0.9580 | 0.988 / 0.920 | 0.963 | not submitted | v003-holdout-0.9580 |
 | v004 | 26 Sep | Features v3 (IDF alignment, name specificity, house-number distance, n-gram cosine) + stage-2 fallback; v002 candidates | 0.968 | 0.989 | 0.9667 | 0.992 / 0.929 | 0.965 | 0.9550 | day2-sub1 |
 | v005 | 26 Sep | Normalization v3 + blocking v3 (skeleton/address/reverse channels) + features v4 | 0.988 | 0.996 | 0.9773 | 0.994 / 0.951 | 0.970 | 0.9683 | day2-sub2 |
+| v006 | 27 Sep | Pruner (cap 20, tau 0.005) + features v5 + lr 0.05, 5 folds, CatBoost blend, t_blank, fallback search | 0.980 | 0.994 | 0.9778 | 0.995 / 0.950 | 0.974 | TODO | TODO |
 
 Public leaderboard leader (26 Sep): 0.988419.
 
@@ -77,7 +78,7 @@ Public leaderboard leader (26 Sep): 0.988419.
   uncertain on France -> any France gap is confident errors (likely FPs on chain names) or LB-estimate noise.
   No France-specific change in v005.
 
-  ## v005 — normalization v3 + blocking v3 + features v4
+## v005 — normalization v3 + blocking v3 + features v4
 - Normalization v3: Indic->Latin consonant skeleton via shared Unicode block layout (name_skel);
   composite house number (addr_hn); state rule = last 2-letter code else first spelled-out name;
   digits-in-words (co1onial->colonial); 6+ digit runs removed from names; letter->digit split (fl13->fl 13).
@@ -91,9 +92,22 @@ Public leaderboard leader (26 Sep): 0.988419.
 - Issue: reverse channel lets one S1 collect many candidates (max 6,243; avg 37.4) -> pruner in v006.
 - Submission (day2-sub2): public LB 0.9683 (v004 0.9550, +0.0133; holdout +0.0106).
   Implied France F0.5 ~0.927 (from ~0.912): first France gain; holdout-LB gap 0.009 (was 0.012).
-  - Error analysis (holdout): loss 0.0227 = missing-only 0.0116, false-empty 0.0048, extra-FP 0.0035,
+- Error analysis (holdout): loss 0.0227 = missing-only 0.0116, false-empty 0.0048, extra-FP 0.0035,
   singleton-FP 0.0017, FP+missing 0.0011. Blank-address candidates recall 0.508 (61K true pairs, ~30K FNs).
   FPs: distinct businesses at same address (Manya Traders vs Manya Rifle; same number, different street).
   42% of holdout FPs belong to train-fold S1 (resolvable by uniqueness on test). Stage-2 gain +0.0016
   (CI [0.0015, 0.0017]); stage 2 adds FPs for 1-match S1. Uniqueness rule confirmed (0.9773 vs 0.9769).
   -> v006: t_blank threshold, features v5 (unmatched IDF mass, hn_eq_word_jac), fallback 1/2/3 search.
+
+## v006 — supervised meta-blocking pruner + model upgrades + features v5
+- Pruner (blocking outputs only; cap=20, tau=0.005 chosen on OOF with max recall loss 0.008):
+  OOF recall 0.9803 @ 10.4 cands; holdout 0.9881 -> 0.9802, 37.4 -> 10.4 cands (4.59M pairs);
+  test 63.5M -> 19.0M pairs (36.7 -> 11.0 per S1, max 20).
+- Laptop B (final-fit prep, 800K S1): blocking recall 0.9881, oracle 0.9961, avg 37.5 -> identical to laptop A
+  (reproducible from fresh clone).
+  - Stage 1 (v006s1, 300K S1, 3.12M pruned pairs, 32.7% positive): LGB best iters 1625-2083; CatBoost hit 6000 cap.
+  Blend OOF: w=0 0.9753, 0.5 0.9757, 1.0 0.9755 -> blend +0.0002. t_blank=0.75 +0.0001. Holdout 0.9763 (v005s1 0.9756).
+  Top gain: comb 0.44, hn_edit 0.10, hn_logdiff 0.05, blk_sk 0.05, unmatched_idf_b 0.03.
+- Stage 2 (v006): fallback 1/2/3 OOF 0.9772/0.9770/0.9767 -> FB_MAX=1. Holdout 0.9778 (v005 0.9773);
+  precision 0.9945, recall 0.9498; singleton 0.9735; India 0.9720, US 0.9816.
+- Candidates: 10.4/S1 (max 20) vs v005 37.4 (max 6,243): 3.6x smaller at +0.0005 F0.5.
