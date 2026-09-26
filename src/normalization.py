@@ -6,11 +6,19 @@ street abbreviations) come from general language knowledge, not business data.
 
 Adds columns (originals kept):
   country_key, name_norm, name_core, name_legal, name_nospace, name_nonlatin,
-  addr_norm, addr_nums, addr_zip, addr_state, addr_blank, addr_state_src
+  addr_norm, addr_nums, addr_zip, addr_state, addr_blank, addr_state_src, name_skel, addr_hn
 
-v2 changes: postcodes split into addr_zip (not house numbers); last state-like component wins;
-missing states filled from an address-component -> state map LEARNED FROM THE SAME SPLIT'S S1
-(unlabeled text only); extra French abbreviations.
+v2 changes: postcodes split into addr_zip (not house numbers); missing states filled from an
+address-component -> state map LEARNED FROM THE SAME SPLIT'S S1 (unlabeled text only); FR abbreviations.
+v3 changes:
+  - state choice: last 2-letter code component wins, else FIRST spelled-out state
+    (fixes "OH, Delaware, ..." and "DC, ..., Washington")
+  - names: digits inside words mapped to letters (co1onial -> colonial); digit runs of 6+ removed
+  - addresses: letter->digit split (fl13 -> fl 13); composite house number addr_hn ("0071/1" -> "71/1")
+  - name_skel: consonant skeleton for cross-script matching. Indic scripts (Devanagari, Bengali,
+    Gurmukhi, Gujarati, Oriya, Tamil, Telugu, Kannada, Malayalam) are mapped through the shared
+    Unicode block layout onto one Devanagari consonant table; Latin names use the same classes.
+    General script knowledge only (Unicode code charts), no external data.
 
 Usage (repo root):
   python src/normalization.py --demo
@@ -111,18 +119,25 @@ LEGAL_ANY = {"private", "limited", "llp", "llc", "incorporated", "corporation", 
 LEGAL_TAIL = {"company", "pc", "pa", "sa", "public"}          # only stripped at the end
 TAIL_JUNK = {"and", "of", "the"}
 LEAD_DROP = {"the"}
+_LEGAL_WORDS = ["private", "limited", "pvt", "ltd", "llp", "llc", "incorporated", "inc", "corporation",
+                "corp", "company", "co", "public", "sarl", "sas", "sasu", "eurl", "gmbh", "plc", "pllc"]
 
 _DOMAIN = re.compile(r"\b(?:www\.)?([a-z0-9][a-z0-9\-]*)\.(?:co\.in|com|net|org|biz|info|in|fr|us|io)\b")
 _HASHNUM = re.compile(r"#\s*\d+")
 _POSS = re.compile(r"['\u2019`]s\b")
+_DIGIT_IN_WORD = re.compile(r"(?<=[a-z])[0134578](?=[a-z])")
+_DIGIT_MAP = {"0": "o", "1": "l", "3": "e", "4": "a", "5": "s", "7": "t", "8": "b"}
+_LONG_DIGITS = re.compile(r"(?<![a-z0-9])\d{6,}(?![a-z0-9])")
 
 
 def normalize_name(raw):
-    """-> (name_norm, name_core, name_legal, name_nospace, name_nonlatin)"""
+    """-> (name_norm, name_core, name_legal, name_nospace, name_nonlatin, name_skel)"""
     s = base_clean(raw)
     nonlatin = int(has_nonlatin(s))
     s = _DOMAIN.sub(r" \1 ", s)
     s = _HASHNUM.sub(" ", s)
+    s = _LONG_DIGITS.sub(" ", s)
+    s = _DIGIT_IN_WORD.sub(lambda m: _DIGIT_MAP[m.group(0)], s)
     s = _POSS.sub("", s)
     s = s.replace("&", " and ").replace(".", "")
     s = _PUNCT.sub(" ", s)
@@ -140,7 +155,49 @@ def normalize_name(raw):
     if not core:                      # never let a name collapse to nothing
         core = toks
     core_s = " ".join(core)
-    return norm, core_s, " ".join(sorted(legal)), core_s.replace(" ", ""), nonlatin
+    return norm, core_s, " ".join(sorted(legal)), core_s.replace(" ", ""), nonlatin, skeleton(core_s)
+
+
+# ------------------------------------------------------------------ cross-script skeleton
+# Devanagari offsets (code point - 0x0900) -> consonant class. Voicing collapsed (g->k, j->c, d->t, b->p)
+_DEV = {0x01: "n", 0x02: "n", 0x15: "k", 0x16: "k", 0x17: "k", 0x18: "k", 0x19: "n", 0x1A: "c", 0x1B: "c",
+        0x1C: "c", 0x1D: "c", 0x1E: "n", 0x1F: "t", 0x20: "t", 0x21: "t", 0x22: "t", 0x23: "n", 0x24: "t",
+        0x25: "t", 0x26: "t", 0x27: "t", 0x28: "n", 0x29: "n", 0x2A: "p", 0x2B: "f", 0x2C: "p", 0x2D: "p",
+        0x2E: "m", 0x30: "r", 0x31: "r", 0x32: "l", 0x33: "l", 0x34: "l", 0x35: "v", 0x36: "s", 0x37: "s",
+        0x38: "s", 0x39: "h", 0x58: "k", 0x59: "k", 0x5A: "k", 0x5B: "c", 0x5C: "t", 0x5D: "t", 0x5E: "f"}
+_LAT_DIGRAPHS = [("mp", "np"), ("mb", "np"), ("ch", "c"), ("sh", "s"), ("th", "t"), ("ph", "f"), ("kh", "k"),
+                 ("gh", "k"), ("bh", "p"), ("dh", "t"), ("jh", "c"), ("ck", "k")]
+_LAT = {"b": "p", "c": "k", "d": "t", "f": "f", "g": "k", "h": "h", "j": "c", "k": "k", "l": "l", "m": "m",
+        "n": "n", "p": "p", "q": "k", "r": "r", "s": "s", "t": "t", "v": "v", "w": "v", "x": "ks", "z": "c"}
+_REPEAT = re.compile(r"(.)\1+")
+
+
+def _skel_word(w):
+    if w.isascii():
+        for a, b in _LAT_DIGRAPHS:
+            w = w.replace(a, b)
+        x = "".join(_LAT.get(ch, "") for ch in w)
+    else:
+        x = "".join(_DEV.get((ord(ch) - 0x0900) % 0x80, "") if 0x0900 <= ord(ch) < 0x0D80 else ""
+                    for ch in w)
+    return _REPEAT.sub(r"\1", x)
+
+
+_LEGAL_SKEL = None
+
+
+def _init_legal_skel():
+    global _LEGAL_SKEL
+    _LEGAL_SKEL = set()
+    _LEGAL_SKEL = {_skel_word(w) for w in _LEGAL_WORDS} - {""}
+
+
+def skeleton(name):
+    """Consonant skeleton of a name (Latin or Indic script), legal words removed."""
+    if _LEGAL_SKEL is None:
+        _init_legal_skel()
+    out = [k for k in (_skel_word(w) for w in name.split()) if k and k not in _LEGAL_SKEL]
+    return " ".join(out)
 
 
 # ------------------------------------------------------------------ addresses
@@ -194,6 +251,21 @@ STATE_MAPS = {"us": US_STATES, "india": IN_STATES, "france": FR_REGIONS}
 
 _NUM = re.compile(r"\d+")
 _ALNUM_SPLIT = re.compile(r"(?<=\d)(?=[a-z]{3,})")      # 15south -> 15 south (keeps 3906a, 33rd)
+_ALPHA_DIGIT = re.compile(r"(?<=[a-z]{2})(?=\d)")        # fl13 -> fl 13 (keeps d1, b123)
+_HN_PART = r"(?:[a-z]{1,2}|[a-z]?\d+[a-z]?)"
+_HN_COMP = re.compile(r"(?<![a-z0-9])(" + _HN_PART + r"(?:\s?[/-]\s?" + _HN_PART + r")+)(?![a-z0-9])")
+
+
+def _composite_hn(s):
+    """First composite house number like 71/1, 3-30-28/b/1, d-21 -> canonical 'd/21'."""
+    for m in _HN_COMP.finditer(s):
+        parts = re.split(r"\s?[/-]\s?", m.group(1))
+        if not any(ch.isdigit() for ch in m.group(1)):
+            continue
+        if parts[0].isdigit() and len(parts[0]) >= 5:      # zip+4 or PIN-like, not a house number
+            continue
+        return "/".join((p.lstrip("0") or "0") if p[:1].isdigit() else p for p in parts)
+    return ""
 _IN_PIN_SPLIT = re.compile(r"(?<!\d)([1-8]\d{2}) (\d{3})(?!\d)")   # "600 042" -> "600042"
 _US_ZIP4 = re.compile(r"(?<!\d)(\d{5}) (\d{4})$")                  # "75001 1234" -> "75001"
 _RE_ZIP = {"us": re.compile(r"\d{5}"), "france": re.compile(r"\d{5}"), "india": re.compile(r"[1-8]\d{5}")}
@@ -218,15 +290,17 @@ def _clean_component(c, ck):
 
 
 def normalize_address(raw, country):
-    """-> (addr_norm, addr_nums, addr_zip, addr_state, addr_blank)"""
+    """-> (addr_norm, addr_nums, addr_zip, addr_state, addr_blank, addr_hn)"""
     if not str(raw).strip():
-        return "", "", "", "", 1
+        return "", "", "", "", 1, ""
     ck = country_key(country)
     amap = ADDR_MAPS.get(ck, ADDR_COMMON)
     smap = STATE_MAPS.get(ck, {})
     s = base_clean(raw).replace("&", " and ")
+    hn = _composite_hn(s)
 
-    nums, zips, state, comps = [], [], "", []
+    nums, zips, comps = [], [], []
+    st_codes, st_names = [], []
     for c in s.split(","):
         c = _clean_component(c, ck)
         if not c:
@@ -243,17 +317,18 @@ def normalize_address(raw, country):
             continue
         c = " ".join(keep)
         code = smap.get(c)
-        if code:                       # whole component is a state/region; the LAST one wins
-            state = code
+        if code:                       # whole component is a state/region
+            (st_codes if c == code else st_names).append(code)
             comps.append(code)
             continue
         for x in _NUM.findall(c):
             x = x.lstrip("0") or "0"
             if x not in nums:
                 nums.append(x)
-        c = _ALNUM_SPLIT.sub(" ", c)
+        c = _ALPHA_DIGIT.sub(" ", _ALNUM_SPLIT.sub(" ", c))
         comps.append(" ".join(amap.get(t, t) for t in c.split()))
-    return " ".join(comps), " ".join(nums), " ".join(zips), state, 0
+    state = st_codes[-1] if st_codes else (st_names[0] if st_names else "")
+    return " ".join(comps), " ".join(nums), " ".join(zips), state, 0, hn
 
 
 # ------------------------------------------------------------------ learned state fill (data-derived)
@@ -307,8 +382,8 @@ def fill_state(df, smap_learned):
 
 
 # ------------------------------------------------------------------ frames
-COLS = ["name_norm", "name_core", "name_legal", "name_nospace", "name_nonlatin",
-        "addr_norm", "addr_nums", "addr_zip", "addr_state", "addr_blank"]
+COLS = ["name_norm", "name_core", "name_legal", "name_nospace", "name_nonlatin", "name_skel",
+        "addr_norm", "addr_nums", "addr_zip", "addr_state", "addr_blank", "addr_hn"]
 
 
 def _norm_chunk(rows):
@@ -353,6 +428,18 @@ DEMO = [
     ("Blue Program", "261 Jo Mar Road, Ardmore, AL 36049-1234", "US"),
     ("Amicale", "3 R Mimerel, 59100 Roubaix", "France"),
     ("Kumar Stores", "Old No#75, Chennai 600 042., TN", "India"),
+    ("Heartland Holding Company", "OH, Delaware, 100 Georgetowne Drive, Unit 105", "US"),
+    ("Dental Precision Partners", "District of Columbia, 1001 4th Street, Washington, # 502", "US"),
+    ("Co1onial Preparatory Aachemdd", "11 JESSRMINE AVENUE, SAINT PAUL, MN", "US"),
+    ("UPTOWN PALNITSE INC - 1566784888", "", "US"),
+    ("Balaji Industries", "H No 71/1, Bhawani Nagar, Meerut, Uttar Pradesh", "India"),
+    ("बालाजी इंडस्ट्रीज", "0071/1, Meerut, UP", "India"),
+    ("Lotus Consulting Private Limited", "Flat No. 601, Mumbai, Floor -6, Maharashtra", "India"),
+    ("लोटस कंसल्टिंग प्राइवेट लिमिटेड", "DOOR NO 601/8, MUMBAI, Maharashtra", "India"),
+    ("White Software Private Limited", "D-1 Arnav Appartment - 2Opp Arjav Appartment, Surat, Gujarat", "India"),
+    ("વ્હાઇટ સોફ્ટવેર પ્રાઇવેટ લિમિટેડ", "D-1 ARNAV APPARTMENT - 2OPP ARJAV APPARTEMNT, SURAT, Gujarat", "India"),
+    ("Modern Alpha Media Private Limited", "A-34, 1St Floor Sector-49, Noida, Uttar Pradesh", "India"),
+    ("मॉडर्न अल्फा मीडिया प्राइवेट लिमिटेड", "Noida, Door No ##435 A-34, UP, 1St Floor Sector-49", "India"),
 ]
 
 
@@ -361,8 +448,8 @@ def run_demo():
         nn = normalize_name(n)
         aa = normalize_address(a, c)
         print(f"\n[{c}] {n!r} | {a!r}")
-        print(f"   name_core={nn[1]!r}  legal={nn[2]!r}  nospace={nn[3]!r}  nonlatin={nn[4]}")
-        print(f"   addr_norm={aa[0]!r}  nums={aa[1]!r}  zip={aa[2]!r}  state={aa[3]!r}  blank={aa[4]}")
+        print(f"   name_core={nn[1]!r}  legal={nn[2]!r}  nonlatin={nn[4]}  skel={nn[5]!r}")
+        print(f"   addr_norm={aa[0]!r}  nums={aa[1]!r}  zip={aa[2]!r}  state={aa[3]!r}  hn={aa[5]!r}  blank={aa[4]}")
 
 
 def _jac(x, y):

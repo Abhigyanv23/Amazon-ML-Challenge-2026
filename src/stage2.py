@@ -139,7 +139,7 @@ def run_train(a, workers):
     if "label" not in c.columns:
         raise SystemExit("train p1 file has no labels - re-run matcher.py train with the latest matcher.py")
     scope = c.s1_id.unique()
-    if set(scope) & set(load_split_ids("holdout")):
+    if not a.final_fit and set(scope) & set(load_split_ids("holdout")):
         raise SystemExit("[STOP] holdout IDs found in training data")
     gt, _ = true_pairs(scope)
     n_true = gt.set_index("source1_entity_id").matched_ids.map(len).reindex(scope)
@@ -242,6 +242,7 @@ def main():
     ap.add_argument("--stage1", default="v002")
     ap.add_argument("--tag", default="v003")
     ap.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 1))
+    ap.add_argument("--final-fit", action="store_true", help="stage-1 OOF came from a final-fit run (includes holdout)")
     a = ap.parse_args()
     t = time.time()
     with Pool(a.jobs) as workers:

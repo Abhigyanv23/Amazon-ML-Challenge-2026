@@ -10,8 +10,9 @@ Never change more than one major component per version without noting it.
 | v002 | 25 Sep | Normalization v2 (zip, learned state fill) + 3-channel blocking + features v2 | 0.968 | 0.989 | 0.9545 | 0.988 / 0.905 | 0.953 | 0.9436 | day1-sub2 |
 | v003 | 26 Sep | Stage-2 group-consistency rescoring on v002 stage-1 probabilities | 0.968 | 0.989 | 0.9580 | 0.988 / 0.920 | 0.963 | not submitted | v003-holdout-0.9580 |
 | v004 | 26 Sep | Features v3 (IDF alignment, name specificity, house-number distance, n-gram cosine) + stage-2 fallback; v002 candidates | 0.968 | 0.989 | 0.9667 | 0.992 / 0.929 | 0.965 | 0.9550 | day2-sub1 |
+| v005 | 26 Sep | Normalization v3 + blocking v3 (skeleton/address/reverse channels) + features v4 | 0.988 | 0.996 | 0.9773 | 0.994 / 0.951 | 0.970 | TODO | TODO |
 
-Public leaderboard leader (25 Sep): 0.9859.
+Public leaderboard leader (26 Sep): 0.988419.
 
 ## v000 — data analysis and scaffolding
 - EDA report: `experiments/v000_eda/eda_report.txt`.
@@ -71,3 +72,20 @@ Public leaderboard leader (25 Sep): 0.9859.
   precision 0.992, recall 0.929; 1-match S1 0.9009 (v003 0.8565).
 - Loss split: matcher ~0.022, blocking ~0.011.
 - Test: avg matches France 3.20 / India 3.15 / US 3.35; empty 5.8% / 6.8% / 5.9%; 5,599,754 matched IDs.
+- France diagnostic (test, unsupervised, stage-1 p): France confidence profile between US and India
+  (top p>=0.95: FR 93.5% / IN 91.3% / US 93.7%; top p in 0.3-0.8: 1.0% / 1.7% / 0.7%). Model is not
+  uncertain on France -> any France gap is confident errors (likely FPs on chain names) or LB-estimate noise.
+  No France-specific change in v005.
+
+  ## v005 — normalization v3 + blocking v3 + features v4
+- Normalization v3: Indic->Latin consonant skeleton via shared Unicode block layout (name_skel);
+  composite house number (addr_hn); state rule = last 2-letter code else first spelled-out name;
+  digits-in-words (co1onial->colonial); 6+ digit runs removed from names; letter->digit split (fl13->fl 13).
+- Blocking v3 (holdout): recall 0.9881 (v002 0.9677), oracle 0.9962 (0.9886), misses 18,114 (49,259),
+  India 0.9821 / US 0.9922, avg cands 37.4 (25.6). Only-channel: word 46,578, skeleton 8,282,
+  trigram 5,975, address 5,839, non-Latin addr 644, reverse 106. State-block misses 2,899 (1,246).
+- Stage 1 (v005s1): 300K S1, 11.25M pairs (9.1% positive); OOF 0.9747; holdout 0.9756.
+  Top gain: blk_rev 0.450, comb 0.204, hn_edit 0.041, num_jac 0.039, blk_sk 0.024, skel_cos3 0.021.
+- Stage 2 (v005, fallback): OOF 0.9763; holdout 0.9773 (v004 0.9667); India 0.9712 (+0.021), US 0.9813;
+  precision 0.994, recall 0.951; 1-match S1 0.926; false-empty 0.0051.
+- Issue: reverse channel lets one S1 collect many candidates (max 6,243; avg 37.4) -> pruner in v006.

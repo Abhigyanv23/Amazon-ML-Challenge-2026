@@ -7,6 +7,12 @@ LightGBM pair classifier + decision logic tuned for per-entity macro F0.5.
   python src/matcher.py test    --tag v001 --k 20   # write output/*.tsv
   --cand-tag reuses another version's blocking candidates (e.g. --tag v004s1 --cand-tag v002)
 
+v006 options (all optional; defaults reproduce earlier versions):
+  --lr 0.05 --leaves 127 --folds 5 --max-rounds 6000   LightGBM settings
+  --catboost [--cb-gpu]        also train CatBoost (Apache 2.0) on the same folds; blend weight tuned on OOF
+  --cache-features             save feature matrices (train/holdout/test) to experiments/cache/X_*
+  --reuse-features             load them instead of recomputing (same candidates + same feature set only)
+
 Decision: keep pair if p >= t; each candidate goes to at most one S1 (highest p);
 an S1 keeps matches only if its best p >= t_top (singleton gate).
 Holdout labels are NEVER used for training or tuning.
@@ -24,7 +30,7 @@ import pandas as pd
 from sklearn.model_selection import GroupKFold
 
 from data_loading import CACHE_DIR, load_ground_truth, load_normalized, load_split_ids
-from features import FeatureBuilder, iter_chunks
+from features import PAIR_FEATS, FeatureBuilder, iter_chunks
 from validate_local import print_metrics, score
 
 PARAMS = dict(objective="binary", learning_rate=0.1, num_leaves=127, min_data_in_leaf=100,
@@ -59,20 +65,55 @@ def true_pairs(s1_ids):
     return gt, tp
 
 
-def featurize(fb, c, workers):
-    parts = []
-    for ch in iter_chunks(c, CHUNK):
-        t = time.time()
-        parts.append(fb.build(ch, workers))
-        print(f"  features: {sum(len(p) for p in parts)}/{len(c)} ({time.time() - t:.0f}s/chunk)")
+def xcache_dir(split, s1set, cand_tag):
+    return os.path.join(CACHE_DIR, f"X_{split}_{s1set}_{cand_tag}_f{len(PAIR_FEATS)}")
+
+
+def iter_features(fb, c, workers, split, s1set, cand_tag, cache=False, reuse=False):
+    """Yields feature chunks aligned with iter_chunks(c); optionally cached as parquet parts."""
+    d = xcache_dir(split, s1set, cand_tag)
+    parts = sorted(os.listdir(d)) if (reuse and os.path.isdir(d)) else None
+    if parts:
+        print(f"  reusing cached features from {d}")
+        n = 0
+        for f in parts:
+            X = pd.read_parquet(os.path.join(d, f))
+            n += len(X)
+            yield X
+        if n != len(c):
+            raise SystemExit(f"[STOP] cached features have {n} rows, candidates {len(c)} - delete {d}")
+        return
+    if fb is None:
+        raise SystemExit(f"[STOP] no cached features in {d}")
+    if cache:
+        os.makedirs(d, exist_ok=True)
+    for i, ch in enumerate(iter_chunks(c, CHUNK)):
+        X = fb.build(ch, workers)
+        if cache:
+            X.to_parquet(os.path.join(d, f"part{i:04d}.parquet"), index=False)
+        yield X
+
+
+def featurize(fb, c, workers, split="train", s1set="train", cand_tag="", cache=False, reuse=False):
+    parts, t = [], time.time()
+    for X in iter_features(fb, c, workers, split, s1set, cand_tag, cache, reuse):
+        parts.append(X)
+        print(f"  features: {sum(len(p) for p in parts)}/{len(c)} ({time.time() - t:.0f}s)")
     return pd.concat(parts, ignore_index=True)
 
 
-def predict(fb, c, booster, feats, workers):
+def predict_proba(models, X):
+    booster, cb, w = models
+    p = booster.predict(X)
+    if cb is not None and w < 1.0:
+        p = w * p + (1 - w) * cb.predict_proba(X)[:, 1]
+    return p
+
+
+def predict(fb, c, models, feats, workers, split="train", s1set="holdout", cand_tag="", cache=False, reuse=False):
     ps = []
-    for ch in iter_chunks(c, CHUNK):
-        X = fb.build(ch, workers)
-        ps.append(booster.predict(X[feats].to_numpy(np.float32)))
+    for X in iter_features(fb, c, workers, split, s1set, cand_tag, cache, reuse):
+        ps.append(predict_proba(models, X[feats].to_numpy(np.float32)))
         print(f"  predicted {sum(len(p) for p in ps)}/{len(c)}")
     c = c.copy()
     c["p"] = np.concatenate(ps).astype(np.float32)
@@ -136,9 +177,10 @@ def to_map(df):
 
 # ------------------------------------------------------------------ modes
 def run_train(a, workers):
-    c = load_cands("train", "train", a.cand_tag or a.tag, a.k)
+    s1set = "all" if a.final_fit else "train"
+    c = load_cands("train", s1set, a.cand_tag or a.tag, a.k)
     scope = c.s1_id.unique()
-    if set(scope) & set(load_split_ids("holdout")):
+    if not a.final_fit and set(scope) & set(load_split_ids("holdout")):
         raise SystemExit("[STOP] holdout IDs found in training candidates")
     gt, tp = true_pairs(scope)
     tp["label"] = 1
@@ -148,46 +190,100 @@ def run_train(a, workers):
     n_true = gt.set_index("source1_entity_id").matched_ids.map(len).reindex(scope)
     print(f"train: {len(scope)} S1, {len(c)} pairs, positive rate {c.label.mean():.3f}")
 
-    X = featurize(FeatureBuilder("train"), c, workers)
+    cand_tag = a.cand_tag or a.tag
+    reuse_ok = a.reuse_features and os.path.isdir(xcache_dir("train", s1set, cand_tag))
+    X = featurize(None if reuse_ok else FeatureBuilder("train"), c, workers, "train", s1set, cand_tag,
+                  a.cache_features, a.reuse_features)
+    params = dict(PARAMS, learning_rate=a.lr, num_leaves=a.leaves)
     feats, y, groups = list(X.columns), c.label.to_numpy(), c.s1_id.to_numpy()
+    Xn = X.to_numpy(np.float32)
+    del X
     oof, iters = np.zeros(len(c), np.float32), []
-    for fold, (tr, va) in enumerate(GroupKFold(n_splits=3).split(X, y, groups)):
+    oof_cb, cb_iters = (np.zeros(len(c), np.float32), []) if a.catboost else (None, [])
+    for fold, (tr, va) in enumerate(GroupKFold(n_splits=a.folds).split(Xn, y, groups)):
         t = time.time()
-        dtr = lgb.Dataset(X.iloc[tr], y[tr])
-        dva = lgb.Dataset(X.iloc[va], y[va], reference=dtr)
-        b = lgb.train(PARAMS, dtr, 2000, valid_sets=[dva],
-                      callbacks=[lgb.early_stopping(50, verbose=False), lgb.log_evaluation(200)])
-        oof[va] = b.predict(X.iloc[va], num_iteration=b.best_iteration)
+        dtr = lgb.Dataset(Xn[tr], y[tr], feature_name=feats)
+        dva = lgb.Dataset(Xn[va], y[va], reference=dtr)
+        b = lgb.train(params, dtr, a.max_rounds, valid_sets=[dva],
+                      callbacks=[lgb.early_stopping(50, verbose=False), lgb.log_evaluation(500)])
+        oof[va] = b.predict(Xn[va], num_iteration=b.best_iteration)
         iters.append(b.best_iteration)
-        print(f"  fold {fold}: best_iter {b.best_iteration} ({time.time() - t:.0f}s)")
-    c["p"] = oof
+        msg = f"  fold {fold}: lgb best_iter {b.best_iteration}"
+        if a.catboost:
+            from catboost import CatBoostClassifier
+            cb = CatBoostClassifier(**cb_params(a))
+            cb.fit(Xn[tr], y[tr], eval_set=(Xn[va], y[va]), early_stopping_rounds=100, verbose=500)
+            oof_cb[va] = cb.predict_proba(Xn[va])[:, 1]
+            cb_iters.append(cb.get_best_iteration())
+            msg += f", cb best_iter {cb.get_best_iteration()}"
+        print(msg + f" ({time.time() - t:.0f}s)")
+
+    w = 1.0
+    if a.catboost:
+        print("  blend weight search (w * lgb + (1-w) * catboost) on OOF:")
+        best = None
+        for wi in np.round(np.arange(0.0, 1.01, 0.25), 2):
+            c["p"] = wi * oof + (1 - wi) * oof_cb
+            f_ = macro_f05(decide(c, 0.7, 0.7), n_true)
+            print(f"    w={wi:.2f}  F0.5@0.7 {f_:.4f}")
+            if best is None or f_ > best[0]:
+                best = (f_, wi)
+        w = float(best[1])
+        c["p"] = w * oof + (1 - w) * oof_cb
+    else:
+        c["p"] = oof
     save_p(c, "train", "train", a.tag)                  # OOF probabilities (for stage 2)
     best_f, t, t_top = tune(c, n_true)
 
-    final = lgb.train(PARAMS, lgb.Dataset(X, y), int(np.mean(iters) * 1.1))
     os.makedirs(os.path.join("models", a.tag), exist_ok=True)
+    final = lgb.train(params, lgb.Dataset(Xn, y, feature_name=feats), int(np.mean(iters) * 1.1))
     final.save_model(os.path.join("models", a.tag, "lgbm.txt"))
+    if a.catboost and w < 1.0:
+        from catboost import CatBoostClassifier
+        cbp = dict(cb_params(a), iterations=int(np.mean(cb_iters) * 1.1))
+        cbf = CatBoostClassifier(**cbp)
+        cbf.fit(Xn, y, verbose=500)
+        cbf.save_model(os.path.join("models", a.tag, "catboost.cbm"))
     imp = pd.Series(final.feature_importance("gain"), index=feats).sort_values(ascending=False)
     print("  top features (gain):\n" + (imp.head(15) / imp.sum()).round(3).to_string())
 
     os.makedirs(os.path.join("experiments", a.tag), exist_ok=True)
     dec = {"t": t, "t_top": t_top, "k": a.k, "oof_F0.5": best_f, "features": feats,
-           "iters": iters, "params": PARAMS, "n_train_s1": int(len(scope)), "n_train_pairs": int(len(c))}
+           "iters": iters, "params": params, "folds": a.folds, "n_train_s1": int(len(scope)),
+           "n_train_pairs": int(len(c)), "cand_tag": cand_tag,
+           "catboost": bool(a.catboost and w < 1.0), "blend_w": w, "cb_iters": cb_iters}
     with open(os.path.join("experiments", a.tag, "decision.json"), "w", encoding="utf-8") as f:
         json.dump(dec, f, indent=2)
-    print(f"saved models/{a.tag}/lgbm.txt and experiments/{a.tag}/decision.json")
+    print(f"saved models/{a.tag}/ and experiments/{a.tag}/decision.json")
+
+
+def cb_params(a):
+    p = dict(iterations=a.max_rounds, learning_rate=max(a.lr, 0.05), depth=8, loss_function="Logloss",
+             random_seed=0, thread_count=os.cpu_count())
+    if a.cb_gpu:
+        p.update(task_type="GPU", devices="0")
+    return p
 
 
 def load_model(tag):
     with open(os.path.join("experiments", tag, "decision.json"), encoding="utf-8") as f:
         dec = json.load(f)
-    return lgb.Booster(model_file=os.path.join("models", tag, "lgbm.txt")), dec
+    booster = lgb.Booster(model_file=os.path.join("models", tag, "lgbm.txt"))
+    cb, w = None, float(dec.get("blend_w", 1.0))
+    if dec.get("catboost"):
+        from catboost import CatBoostClassifier
+        cb = CatBoostClassifier()
+        cb.load_model(os.path.join("models", tag, "catboost.cbm"))
+    return (booster, cb, w), dec
 
 
 def run_holdout(a, workers):
-    booster, dec = load_model(a.tag)
-    c = load_cands("train", "holdout", a.cand_tag or a.tag, a.k)
-    c = predict(FeatureBuilder("train"), c, booster, dec["features"], workers)
+    models, dec = load_model(a.tag)
+    cand_tag = a.cand_tag or a.tag
+    c = load_cands("train", "holdout", cand_tag, a.k)
+    reuse_ok = a.reuse_features and os.path.isdir(xcache_dir("train", "holdout", cand_tag))
+    c = predict(None if reuse_ok else FeatureBuilder("train"), c, models, dec["features"], workers,
+                "train", "holdout", cand_tag, a.cache_features, a.reuse_features)
     save_p(c, "train", "holdout", a.tag)
     d = decide(c, dec["t"], dec["t_top"])
 
@@ -210,9 +306,12 @@ def run_holdout(a, workers):
 
 
 def run_test(a, workers):
-    booster, dec = load_model(a.tag)
-    c = load_cands("test", "all", a.cand_tag or a.tag, a.k)
-    c = predict(FeatureBuilder("test"), c, booster, dec["features"], workers)
+    models, dec = load_model(a.tag)
+    cand_tag = a.cand_tag or a.tag
+    c = load_cands("test", "all", cand_tag, a.k)
+    reuse_ok = a.reuse_features and os.path.isdir(xcache_dir("test", "all", cand_tag))
+    c = predict(None if reuse_ok else FeatureBuilder("test"), c, models, dec["features"], workers,
+                "test", "all", cand_tag, a.cache_features, a.reuse_features)
     save_p(c, "test", "all", a.tag)
     d = decide(c, dec["t"], dec["t_top"])
 
@@ -239,6 +338,15 @@ def main():
     ap.add_argument("--tag", default="v001")
     ap.add_argument("--k", type=int, default=20)
     ap.add_argument("--cand-tag", default=None, help="blocking tag to reuse (default: --tag)")
+    ap.add_argument("--lr", type=float, default=0.1)
+    ap.add_argument("--leaves", type=int, default=127)
+    ap.add_argument("--folds", type=int, default=3)
+    ap.add_argument("--max-rounds", type=int, default=2000)
+    ap.add_argument("--catboost", action="store_true")
+    ap.add_argument("--cb-gpu", action="store_true")
+    ap.add_argument("--cache-features", action="store_true")
+    ap.add_argument("--reuse-features", action="store_true")
+    ap.add_argument("--final-fit", action="store_true", help="train on cand_train_all_<tag> (includes holdout)")
     ap.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 1))
     a = ap.parse_args()
     t = time.time()

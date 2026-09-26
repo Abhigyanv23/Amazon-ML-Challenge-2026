@@ -1,5 +1,6 @@
 """
-src/features.py  (v3)
+src/features.py  (v4: + skel_cos3 cross-script name skeleton cosine, hn_comp_eq composite house number)
+(v3)
 v2: + zip_eq, b_state_inferred, n_name_close; passes through all blk_* columns
 v3: + IDF-weighted name token alignment, name specificity (name counts across S1/pool),
       house-number edit/numeric distance, address word overlap without numbers,
@@ -17,7 +18,8 @@ from rapidfuzz.distance import JaroWinkler, Levenshtein
 
 from data_loading import load_normalized
 
-STR_COLS = ["name_core", "name_nospace", "name_legal", "addr_norm", "addr_nums", "addr_state", "addr_zip"]
+STR_COLS = ["name_core", "name_nospace", "name_legal", "addr_norm", "addr_nums", "addr_state", "addr_zip",
+            "name_skel", "addr_hn"]
 REC_COLS = ["entity_id"] + STR_COLS + ["name_nonlatin", "addr_blank", "addr_state_src"]
 
 PAIR_FEATS = [
@@ -31,6 +33,8 @@ PAIR_FEATS = [
     "idf_match_a", "idf_match_b", "idf_matched_sum", "idf_b_total", "unmatched_a", "unmatched_b",
     "hn_edit", "hn_logdiff", "hn_len_eq", "addr_word_jac",
     "name_cos2", "name_cos3", "addr_cos3",
+    # v4
+    "skel_cos3", "hn_comp_eq",
 ]
 MAX_IDF = 16.0
 
@@ -53,8 +57,8 @@ def _cos(ca, cb):
 
 
 def _pair_feats(a, b):
-    ac, an, al, aa, anum, ast, az, aidf = a
-    bc, bn, bl, ba, bnum, bst, bz, bidf = b
+    ac, an, al, aa, anum, ast, az, ask, ahn, aidf = a
+    bc, bn, bl, ba, bnum, bst, bz, bsk, bhn, bidf = b
     at, bt = ac.split(), bc.split()
     f = [
         float(ac == bc), float(an == bn),
@@ -105,6 +109,9 @@ def _pair_feats(a, b):
     # v3: character n-gram cosines
     f += [_cos(_ngrams(an, 2), _ngrams(bn, 2)), _cos(_ngrams(an, 3), _ngrams(bn, 3)),
           _cos(_ngrams(aa.replace(" ", ""), 3), _ngrams(ba.replace(" ", ""), 3)) if aa and ba else -1.0]
+    # v4
+    f += [_cos(_ngrams(ask.replace(" ", ""), 3), _ngrams(bsk.replace(" ", ""), 3)) if ask and bsk else -1.0,
+          float(ahn == bhn) if ahn and bhn else -1.0]
     return f
 
 
