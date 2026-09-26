@@ -6,6 +6,7 @@ tuned on train-fold OOF data, never on holdout.
 Usage:
   $env:PYTHONIOENCODING="utf-8"
   python src/error_analysis.py --stage1 v002 --stage2 v003 > experiments/v004/error_analysis.txt
+  python src/error_analysis.py --stage1 v005s1 --stage2 v005 --cand-tag v005 > experiments/v005/error_analysis.txt
 """
 import argparse
 import json
@@ -89,9 +90,12 @@ def main():
     ap.add_argument("--stage1", default="v002")
     ap.add_argument("--stage2", default="v003")
     ap.add_argument("--boot", type=int, default=200)
+    ap.add_argument("--cand-tag", default=None, help="blocking tag of the holdout candidates (default: --stage1)")
     ap.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 1))
     a = ap.parse_args()
-    os.makedirs(os.path.join("experiments", "v004"), exist_ok=True)
+    cand_tag = a.cand_tag or a.stage1
+    out_dir = os.path.join("experiments", a.stage2)
+    os.makedirs(out_dir, exist_ok=True)
     out = {}
 
     ids = load_split_ids("holdout")
@@ -142,10 +146,16 @@ def main():
         d2[["s1_id", "cand_id"]].assign(pred2=1), how="left")
     P[["pred1", "pred2"]] = P[["pred1", "pred2"]].fillna(0).astype(int)
 
-    cand = pd.read_parquet(os.path.join(CACHE_DIR, f"cand_train_holdout_{a.stage1}.parquet"),
-                           columns=["s1_id", "cand_id", "rank", "blk_tri_rank", "blk_nl_rank"])
+    cpath = os.path.join(CACHE_DIR, f"cand_train_holdout_{cand_tag}.parquet")
+    import pyarrow.parquet as pq
+    avail = pq.read_schema(cpath).names
+    rk = [x for x in ["rank", "blk_tri_rank", "blk_sk_rank", "blk_ad_rank", "blk_nl_rank", "blk_rev_rank"] if x in avail]
+    cand = pd.read_parquet(cpath, columns=["s1_id", "cand_id"] + rk)
     P = P.merge(cand, how="left")
-    P["channel"] = np.select([P["rank"] <= 20, P["blk_tri_rank"] <= 10], ["word", "trigram_only"], "nonlatin_only")
+    lim = {"rank": 20, "blk_tri_rank": 10, "blk_sk_rank": 5, "blk_ad_rank": 5, "blk_nl_rank": 5, "blk_rev_rank": 2}
+    names = {"rank": "word", "blk_tri_rank": "trigram_only", "blk_sk_rank": "skeleton_only",
+             "blk_ad_rank": "address_only", "blk_nl_rank": "nonlatin_addr_only", "blk_rev_rank": "reverse_only"}
+    P["channel"] = np.select([P[r] <= lim[r] for r in rk], [names[r] for r in rk], "other")
     pool_attr = pd.concat([pd.read_parquet(cache_path("train", n), columns=[
         "entity_id", "name_nonlatin", "addr_blank", "addr_state_src"]) for n in (2, 3)]).set_index("entity_id")
     at = pool_attr.reindex(P.cand_id)
@@ -236,9 +246,9 @@ def main():
             print(f"    S1 {rs1.business_name.get(r.s1_id)!r} | {rs1.business_address.get(r.s1_id)!r}")
             print(f"    -> {rp.business_name.get(r.cand_id)!r} | {rp.business_address.get(r.cand_id)!r}")
 
-    with open(os.path.join("experiments", "v004", "error_analysis.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(out_dir, "error_analysis.json"), "w", encoding="utf-8") as f:
         json.dump(out, f, indent=2, default=float)
-    print("\nsaved experiments/v004/error_analysis.json")
+    print(f"\nsaved {out_dir}/error_analysis.json")
 
 
 if __name__ == "__main__":

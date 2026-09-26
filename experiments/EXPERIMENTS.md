@@ -91,3 +91,9 @@ Public leaderboard leader (26 Sep): 0.988419.
 - Issue: reverse channel lets one S1 collect many candidates (max 6,243; avg 37.4) -> pruner in v006.
 - Submission (day2-sub2): public LB 0.9683 (v004 0.9550, +0.0133; holdout +0.0106).
   Implied France F0.5 ~0.927 (from ~0.912): first France gain; holdout-LB gap 0.009 (was 0.012).
+  - Error analysis (holdout): loss 0.0227 = missing-only 0.0116, false-empty 0.0048, extra-FP 0.0035,
+  singleton-FP 0.0017, FP+missing 0.0011. Blank-address candidates recall 0.508 (61K true pairs, ~30K FNs).
+  FPs: distinct businesses at same address (Manya Traders vs Manya Rifle; same number, different street).
+  42% of holdout FPs belong to train-fold S1 (resolvable by uniqueness on test). Stage-2 gain +0.0016
+  (CI [0.0015, 0.0017]); stage 2 adds FPs for 1-match S1. Uniqueness rule confirmed (0.9773 vs 0.9769).
+  -> v006: t_blank threshold, features v5 (unmatched IDF mass, hn_eq_word_jac), fallback 1/2/3 search.

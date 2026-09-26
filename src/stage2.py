@@ -114,10 +114,10 @@ class Stage2Builder:
         return X.astype(np.float32)
 
 
-def apply_fallback(c, p2):
-    """c has stage-1 p in column p1; returns final probabilities."""
+def apply_fallback(c, p2, fb=FB_MAX):
+    """c has stage-1 p in column p1; groups with <= fb confident stage-1 candidates keep p1."""
     n_conf = (c.p1 >= P_MIN).groupby(c.s1_id).transform("sum").to_numpy()
-    return np.where(n_conf <= FB_MAX, c.p1.to_numpy(), p2).astype(np.float32)
+    return np.where(n_conf <= fb, c.p1.to_numpy(), p2).astype(np.float32)
 
 
 def load_p1(split, s1set, stage1):
@@ -163,13 +163,17 @@ def run_train(a, workers):
     c["p"] = oof
     print("stage-2:")
     best_plain = tune(c, n_true)
-    cf = c.copy()
-    cf["p"] = apply_fallback(c, oof)
-    print(f"stage-2 with fallback to stage-1 when <= {FB_MAX} candidate has p1 >= {P_MIN}:")
-    best_fb = tune(cf, n_true)
+    best_fb, fb_max = None, 0
+    for fb in (1, 2, 3):
+        cf = c.copy()
+        cf["p"] = apply_fallback(c, oof, fb)
+        print(f"stage-2 with fallback to stage-1 when <= {fb} candidates have p1 >= {P_MIN}:")
+        r = tune(cf, n_true)
+        if best_fb is None or r[0] > best_fb[0]:
+            best_fb, fb_max = r, fb
     fallback = best_fb[0] > best_plain[0]
-    best_f, t, t_top = best_fb if fallback else best_plain
-    print(f"  -> using {'FALLBACK' if fallback else 'plain stage 2'} (OOF {best_f:.4f})")
+    best_f, t, t_top, t_blank = best_fb if fallback else best_plain
+    print(f"  -> using {'FALLBACK (FB_MAX=' + str(fb_max) + ')' if fallback else 'plain stage 2'} (OOF {best_f:.4f})")
 
     final = lgb.train(PARAMS, lgb.Dataset(X, y), int(np.mean(iters) * 1.1))
     os.makedirs(os.path.join("models", a.tag), exist_ok=True)
@@ -179,7 +183,7 @@ def run_train(a, workers):
     os.makedirs(os.path.join("experiments", a.tag), exist_ok=True)
     with open(os.path.join("experiments", a.tag, "decision.json"), "w", encoding="utf-8") as f:
         json.dump({"stage1": a.stage1, "t": t, "t_top": t_top, "oof_F0.5": best_f, "features": feats,
-                   "fallback": bool(fallback), "FB_MAX": FB_MAX,
+                   "fallback": bool(fallback), "FB_MAX": fb_max, "t_blank": t_blank,
                    "oof_plain": best_plain[0], "oof_fallback": best_fb[0],
                    "iters": iters, "M_TOP": M_TOP, "P_MIN": P_MIN}, f, indent=2)
     print(f"saved models/{a.tag}/lgbm_stage2.txt and experiments/{a.tag}/decision.json")
@@ -198,11 +202,11 @@ def _predict(a, split, s1set, workers):
     p2 = np.concatenate(ps).astype(np.float32)
     if dec.get("fallback"):
         c["p1"] = c.p
-        c["p"] = apply_fallback(c, p2)
+        c["p"] = apply_fallback(c, p2, dec.get("FB_MAX", FB_MAX))
         c = c.drop(columns="p1")
     else:
         c["p"] = p2
-    return c, decide(c, dec["t"], dec["t_top"]), dec
+    return c, decide(c, dec["t"], dec["t_top"], dec.get("t_blank")), dec
 
 
 def run_holdout(a, workers):

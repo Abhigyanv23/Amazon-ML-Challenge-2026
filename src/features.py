@@ -1,5 +1,7 @@
 """
-src/features.py  (v4: + skel_cos3 cross-script name skeleton cosine, hn_comp_eq composite house number)
+src/features.py  (v5: + unmatched_idf_a/b (IDF mass of name tokens NOT shared), hn_eq_word_jac
+ (address-word overlap when house numbers are equal: same number + different street = distinct business))
+(v4: + skel_cos3 cross-script name skeleton cosine, hn_comp_eq composite house number)
 (v3)
 v2: + zip_eq, b_state_inferred, n_name_close; passes through all blk_* columns
 v3: + IDF-weighted name token alignment, name specificity (name counts across S1/pool),
@@ -35,6 +37,8 @@ PAIR_FEATS = [
     "name_cos2", "name_cos3", "addr_cos3",
     # v4
     "skel_cos3", "hn_comp_eq",
+    # v5
+    "unmatched_idf_a", "unmatched_idf_b", "hn_eq_word_jac",
 ]
 MAX_IDF = 16.0
 
@@ -100,18 +104,21 @@ def _pair_feats(a, b):
     else:
         f += [-1.0, -1.0, -1.0]
     # v3: address words without numbers
+    awj = -1.0
     if aa and ba:
         wa_ = {x for x in aa.split() if not any(ch.isdigit() for ch in x)}
         wb_ = {x for x in ba.split() if not any(ch.isdigit() for ch in x)}
-        f.append(_jac(wa_, wb_) if (wa_ or wb_) else -1.0)
-    else:
-        f.append(-1.0)
+        awj = _jac(wa_, wb_) if (wa_ or wb_) else -1.0
+    f.append(awj)
     # v3: character n-gram cosines
     f += [_cos(_ngrams(an, 2), _ngrams(bn, 2)), _cos(_ngrams(an, 3), _ngrams(bn, 3)),
           _cos(_ngrams(aa.replace(" ", ""), 3), _ngrams(ba.replace(" ", ""), 3)) if aa and ba else -1.0]
     # v4
     f += [_cos(_ngrams(ask.replace(" ", ""), 3), _ngrams(bsk.replace(" ", ""), 3)) if ask and bsk else -1.0,
           float(ahn == bhn) if ahn and bhn else -1.0]
+    # v5
+    f += [sum(wa[x] for x in set(wa) - common), sum(wb[x] for x in set(wb) - common),
+          awj if (na and nb and na[0] == nb[0]) else -1.0]
     return f
 
 

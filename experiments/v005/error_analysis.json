@@ -1,0 +1,37 @@
+{
+  "bootstrap": {
+    "f1": 0.9756398259549933,
+    "f2": 0.9772618972823085,
+    "diff_ci": [
+      0.0015216567073956411,
+      0.0017312222377140335
+    ]
+  },
+  "pairs": {
+    "blocking_miss": 18114,
+    "FN": 56572,
+    "FP": 9305,
+    "fn_reason": {
+      "low_p": 42169,
+      "near_miss_p>=t-0.2": 14098,
+      "lost_to_other_S1": 305
+    },
+    "fp_type": {
+      "distractor(no owner)": 5092,
+      "belongs_train_fold_S1": 3881,
+      "belongs_other_holdout_S1": 332
+    }
+  },
+  "transitions": {
+    "unchanged": 16498457,
+    "TP_recovered": 10064,
+    "TP_lost": 4795,
+    "FP_removed": 3235,
+    "FP_new": 1640
+  },
+  "uniqueness_ab": {
+    "A_no_uniqueness": 0.9768978709591034,
+    "B_current_uniqueness": 0.9772618972823085,
+    "C_unique_only_if_winner_p>=0.9": 0.9772341977771447
+  }
+}
