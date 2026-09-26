@@ -60,6 +60,8 @@ Public leaderboard leader (25 Sep): 0.9859.
 - Decision tuned on the coarse 0.05 grid only (fine 0.01 grid added to matcher.tune() after this run).
 - Not submitted: holdout gain +0.0035 held back to combine with v004 fixes. Test outputs kept in experiments/v003/not_submitted/.
 
+
+
 ## Planned
 - Diagnose remaining India blocking misses (v002 recall India 0.9475 vs US 0.9812).
 - Error analysis of v003 holdout: false positives vs false negatives by country and match count.
