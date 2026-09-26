@@ -9,6 +9,7 @@ Never change more than one major component per version without noting it.
 | v001 | 25 Sep | Normalization v1 + token blocking (k=20) + LightGBM + OOF-tuned decision | 0.948 | 0.980 | 0.9481 | 0.987 / 0.894 | 0.950 | 0.9310 | day1-sub1 |
 | v002 | 25 Sep | Normalization v2 (zip, learned state fill) + 3-channel blocking + features v2 | 0.968 | 0.989 | 0.9545 | 0.988 / 0.905 | 0.953 | 0.9436 | day1-sub2 |
 | v003 | 26 Sep | Stage-2 group-consistency rescoring on v002 stage-1 probabilities | 0.968 | 0.989 | 0.9580 | 0.988 / 0.920 | 0.963 | not submitted | v003-holdout-0.9580 |
+| v004 | 26 Sep | Features v3 (IDF alignment, name specificity, house-number distance, n-gram cosine) + stage-2 fallback; v002 candidates | 0.968 | 0.989 | 0.9667 | 0.992 / 0.929 | 0.965 | 0.9550 | day2-sub1 |
 
 Public leaderboard leader (25 Sep): 0.9859.
 
@@ -60,8 +61,13 @@ Public leaderboard leader (25 Sep): 0.9859.
 - Decision tuned on the coarse 0.05 grid only (fine 0.01 grid added to matcher.tune() after this run).
 - Not submitted: holdout gain +0.0035 held back to combine with v004 fixes. Test outputs kept in experiments/v003/not_submitted/.
 
-
-
-## Planned
-- Diagnose remaining India blocking misses (v002 recall India 0.9475 vs US 0.9812).
-- Error analysis of v003 holdout: false positives vs false negatives by country and match count.
+## v004 — error analysis → features v3 + stage-2 fallback
+- Error analysis (v003 holdout): loss mostly recall (missing-only 0.0188, false-empty 0.0119); blank-address
+  candidates recall 0.52; FPs = near-duplicates with different house numbers; stage 2 hurt 1-match S1;
+  uniqueness rule confirmed (0.9580 vs 0.9574 without); bootstrap CI of v003-v002 diff [0.0033, 0.0037].
+- Stage 1 (v004s1, v002 candidates): OOF 0.9637, holdout 0.9646 (v002 0.9545). New top features:
+  hn_edit 0.063, b_name_in_s1 0.030, hn_logdiff 0.024.
+- Stage 2 (v004): OOF plain 0.9655 vs fallback 0.9658 -> fallback. Holdout 0.9667; India 0.9498, US 0.9780;
+  precision 0.992, recall 0.929; 1-match S1 0.9009 (v003 0.8565).
+- Loss split: matcher ~0.022, blocking ~0.011.
+- Test: avg matches France 3.20 / India 3.15 / US 3.35; empty 5.8% / 6.8% / 5.9%; 5,599,754 matched IDs.
