@@ -13,6 +13,7 @@ Never change more than one major component per version without noting it.
 | v005 | 26 Sep | Normalization v3 + blocking v3 (skeleton/address/reverse channels) + features v4 | 0.988 | 0.996 | 0.9773 | 0.994 / 0.951 | 0.970 | 0.9683 | day2-sub2 |
 | v005w | 27 Sep | Wider blocking (k30/sk10/rev5) + name_overlap feature | 0.991 | 0.997 | 0.9773 | 0.993 / 0.952 | 0.969 | — | — |
 | v008 | 27 Sep | GPT-2 cross-encoder score (g001) as stage-2 feature, on v005w/v005ws1 | 0.991 | 0.997 | 0.9835 | 0.996 / 0.962 | 0.986 | 0.9768 | — |
+| v009 | 27 Sep | + XLM-R-base cross-encoder score (x001) next to GPT-2 in stage 2 | 0.991 | 0.997 | 0.9857 | 0.997 / 0.964 | 0.991 | pending | — |
 
 Public leaderboard leader (26 Sep): 0.988419.
 
@@ -109,3 +110,16 @@ Public leaderboard leader (26 Sep): 0.988419.
 - Remaining holdout errors (pairs among candidates, 51,230): 79% inside the GPT-2 band (35.8K FN / 4.7K FP),
   14% just outside (p1 0.005-0.02 / 0.98-0.995), 7% far outside; plus 13,545 true pairs never blocked.
   -> next: second, multilingual cross-encoder (XLM-R) on the same band rather than a wider band.
+
+## v009 — XLM-RoBERTa-base as a second cross-encoder
+- x001: `xlm-roberta-base` (MIT, 278M, multilingual), same band and folds as g001; text-pair input
+  (`<s> a </s></s> b </s>`), 2 epochs, lr 2e-5, bf16; ~530 pairs/s training, ~4.8K pairs/s inference.
+  First test run was OOM-killed (20.5 GB: tokenizing 2.4M pairs in one call while stage 2 used 10 GB);
+  fixed by encoding in 50K chunks (~8 GB).
+- OOF on band pairs: AUC stage-1 0.9256 / GPT-2 0.9430 / XLM-R 0.9679; logloss 0.3108 / 0.2815 / 0.2121.
+- Stage 2 (`--llm g001,x001`): OOF 0.9852 (v008 0.9827); plain stage 2, t = t_top = 0.73.
+  Gain: p1 0.931, p1_rank 0.033, p_llm_x001 0.027, p_llm (GPT-2) 0.001 -> XLM-R replaces most of GPT-2's signal.
+- Holdout: F0.5 0.9857 (v008 0.9835); precision 0.997, recall 0.964; singleton acc 0.991 (0.986);
+  1-match S1 0.952 (0.941); India 0.9848 (+0.005), US 0.9864 (+0.001).
+- Test: avg matches France 3.28 / India 3.33 / US 3.36; empty 5.8% / 5.9% / 5.8%; 5,780,837 matched IDs.
+

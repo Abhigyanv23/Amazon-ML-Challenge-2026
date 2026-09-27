@@ -48,18 +48,27 @@ python src\stage2.py holdout --stage1 v002 --tag v003
 python src\stage2.py test    --stage1 v002 --tag v003   # overwrites output/*.tsv; re-run steps 10-11
 ```
 
-Optional GPT-2 cross-encoder for stage 2 (v008; needs `requirements-llm.txt` + CUDA torch). GPT-2 scores only
-uncertain pairs (stage-1 p in [0.02, 0.98], top 8 per S1); its probability is added to stage 2 as a feature:
+Stage 2 with transformer cross-encoders (v009, current best; needs `requirements-llm.txt` + CUDA torch).
+GPT-2 small (g001) and XLM-RoBERTa-base (x001) are fine-tuned as pair classifiers on uncertain pairs only
+(stage-1 p in [0.02, 0.98], top 8 per S1; 2 folds by S1). Their probabilities are stage-2 features.
+Commands as run for v009 (AWS g5.2xlarge, A10G 24 GB; lower `--bs` on smaller GPUs):
 
-```powershell
-python src\llm_rescore.py count   --stage1 v005ws1              # band sizes, decide --lo/--hi/--top
-python src\llm_rescore.py train   --stage1 v005ws1 --tag g001  # 2-fold by S1 -> OOF p_llm (models/g001/)
-python src\llm_rescore.py holdout --tag g001
-python src\llm_rescore.py test    --tag g001
-python src\stage2.py train   --stage1 v005ws1 --tag v008 --llm g001
-python src\stage2.py holdout --stage1 v005ws1 --tag v008
-python src\stage2.py test    --stage1 v005ws1 --tag v008
+```bash
+python src/llm_rescore.py count   --stage1 v005ws1                  # band sizes
+python src/llm_rescore.py train   --stage1 v005ws1 --tag g001 --bs 64 --max-train 0 --epochs 2
+python src/llm_rescore.py holdout --tag g001
+python src/llm_rescore.py test    --tag g001
+python src/llm_rescore.py train   --stage1 v005ws1 --tag x001 --model xlm-roberta-base \
+       --bs 64 --max-train 0 --epochs 2 --lr 2e-5 --bf16
+python src/llm_rescore.py holdout --tag x001
+python src/llm_rescore.py test    --tag x001
+python src/stage2.py train   --stage1 v005ws1 --tag v009 --llm g001,x001
+python src/stage2.py holdout --stage1 v005ws1 --tag v009
+python src/stage2.py test    --stage1 v005ws1 --tag v009    # writes output/*.tsv
 ```
+
+Timings on the A10G: each cross-encoder trains in ~25-30 min and scores the 2.4M test band pairs in
+30-60 min; stage 2 takes ~40 min per split on 8 vCPU.
 
 Blocking defaults: word channel k=20, trigram channel `--k-tri 10`, non-Latin address channel `--k-nl 5`.
 
@@ -98,5 +107,6 @@ utils/          organizer-provided validator (unmodified)
 ## Licences
 
 LightGBM (MIT), rapidfuzz (MIT), sparse_dot_topn (Apache 2.0), scikit-learn/pandas/numpy/scipy (BSD),
-pyarrow (Apache 2.0). Optional stage-2 rescoring (v008) uses the pretrained GPT-2 small checkpoint (MIT, 124M)
-via transformers (Apache 2.0) and PyTorch (BSD); without `--llm` no pretrained models are used.
+pyarrow (Apache 2.0). Stage-2 rescoring (v008/v009) uses pretrained checkpoints
+GPT-2 small (MIT, 124M) and XLM-RoBERTa-base (MIT, 278M), fine-tuned on the provided training data only, via
+transformers (Apache 2.0) and PyTorch (BSD). Weights are downloaded once at setup; no lookups at run time.
