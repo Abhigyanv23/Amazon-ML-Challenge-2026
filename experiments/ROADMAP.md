@@ -1,273 +1,106 @@
 # Roadmap — Amazon ML Challenge 2026 (Business Entity Resolution)
 
-Last updated: 27 Sep 2026 (Day 3). Estimated gains are engineering estimates, not measurements;
-every version is verified on the frozen holdout before submission, but from v006 onward the
-holdout no longer reliably predicts leaderboard direction (see "Known limitation" below) — treat
-holdout as necessary, not sufficient.
+Last updated: 27 Sep 2026 (Day 3, packaging phase). **We are now in final-assembly mode**: the
+priority is locking in the best confirmed result and building the submission zip, not further
+feature engineering. See "Central finding" in `EXPERIMENTS.md` for why holdout-only validation is
+no longer trusted for new stage-1/stage-2 changes.
 
 ## Current position
 
 | Item | Value |
 |---|---|
-| **Best submitted (use this as the fallback final)** | **v005 — public LB 0.9683 (holdout 0.9773)** |
-| Leader (public LB, 26 Sep) | 0.988419 |
-| Submissions used | 6 (day1-sub1/2, day2-sub1/2/3/4) + v005fr (this update) |
+| **Best confirmed (use this as the final, pending open items below)** | **v005w + GPT-2 stage 2 — public LB 0.9770** |
+| Best confirmed, LightGBM-only pipeline | v005w — public LB 0.9690 |
+| Leader (public LB) | 0.988419 |
+| Gap to leader | 0.0114 |
 
 ### Submission history (public leaderboard)
 
-| Tag | Version | Public LB | Candidates/S1 (test) |
-|---|---|---|---|
-| day1-sub1 | v001 | 0.9310 | 20.0 |
-| day1-sub2 | v002 | 0.9436 | 25.6 |
-| day2-sub1 | v004 | 0.9550 | 25.6 |
-| **day2-sub2** | **v005** | **0.9683 (best)** | 36.7 (max 6,243) |
-| day2-sub3 | v006 | 0.9652 | 11.0 (max 20) |
-| day2-sub4 | v006fr (India/US v006, France v005) | 0.9642 | mixed |
-| (unlogged) | v005fr (India/US v005, France v006) | **0.9640** | mixed |
+| Version | Public LB |
+|---|---|
+| v001 | 0.9310 |
+| v002 | 0.9436 |
+| v004 | 0.9550 |
+| v005 | 0.9683 |
+| v006 (pruned) | 0.9652 |
+| v006fr (hybrid) | 0.9642 |
+| v005fr (hybrid) | 0.9640 |
+| v005w (+name_overlap) | 0.9690 |
+| v006np (+more features, no pruner) | 0.9640 |
+| **v005w + GPT-2 stage 2** | **0.9770 — current best** |
 
-### Open question: the four hybrid scores are inconsistent with a simple weighted-average model
+## Central finding (moved from EXPERIMENTS.md, repeated here since it governs everything below)
 
-Treating LB ≈ w·S(India/US rows) + (1−w)·S(France rows) for some fixed w, the four submissions
-(v005, v006, v006fr, v005fr) over-determine the four unknowns and **do not solve consistently**:
-comparing (v005 − v006fr) implies France-v005 beats France-v006 by ~0.029; comparing
-(v006 − v005fr) implies the opposite (France-v006 better by ~0.007) — a sign flip, not just a
-different magnitude. Likely causes, in order of suspicion given our history of copy/build
-mistakes on this exact step (Section "known incidents" below): (a) the public leaderboard scores
-only a **subset** of test, so the four submissions may not share an identical France/India/US
-row sample; (b) a build error in `v005fr` (verify with
-`check_submission.py --out-dir experiments/v005fr/submission` against the expected combine-table
-counts — France ≈36.7 cands/S1 from v005, India/US ≈11.0 cands/S1 from v006 — before trusting
-0.9640 as a real measurement); (c) genuine per-submission noise from the LB being a subset.
-**Action before drawing any France conclusion from these four numbers: re-verify the v005fr
-submission folder counts.** Until resolved, do not use v006's France rows over v005's — v005 pure
-remains the best confirmed result and needs no hybrid.
+Holdout F0.5 no longer reliably predicts leaderboard rank for stage-1/stage-2 changes, not just
+for pruning changes as first diagnosed at v006. v006np (no pruner, v005's exact unpruned
+candidates, best holdout ever at 0.9784) still lost to v005w on the leaderboard (0.964 vs 0.969).
+**No further stage-1/stage-2 variant should be trusted without its own leaderboard confirmation.**
+This is why the roadmap below shifts from "build more versions" to "package what's confirmed."
 
-### Where the remaining loss is (v005 holdout, 1 − F0.5 = 0.0227)
+## What's done and what's not going further
 
-| Source of loss | Size | Meaning |
+| Version | Status | Verdict |
 |---|---|---|
-| Blocking | ≈ 0.004 | Ceiling 0.996 vs unpruned candidate recall 98.8%; small and well-characterized |
-| Matcher / decision | ≈ 0.019 | Blank-address recall only ~51%; false positives on same-address/chain names |
-| France (LB only) | ≈ 0.007–0.03 | See open question above — magnitude currently unclear |
+| v001–v005 | Done | Solid, monotonic improvement; v005 was best for a full day |
+| v006 (pruner) | Done | Regressed on LB; root-caused to per-S1 pruning under test-time competition |
+| v006fr / v005fr (hybrids) | Done | Both worse than v005; the hybrid-isolation approach itself is sound methodology but didn't find a net win here |
+| v007 / v008 (final-fits on v006 config) | Abandoned | Inherited v006's regression before it was understood; correctly stopped |
+| Large-k blocking experiment | Abandoned | Marginal ceiling gain for a 6x candidate-set cost, OOM'd on test |
+| **v005w (+name_overlap)** | **Done — confirmed +0.0007 real gain** | Kept; base for GPT-2 layer |
+| **v006np (+more features)** | **Done — confirmed regression despite best-ever holdout** | Not used; proves holdout is unreliable for this class of change |
+| **v005w + GPT-2 stage 2** | **Done — confirmed best result, 0.9770** | **Current leading candidate for final submission** |
+| v013 (cost-sensitive weight search) | Not built | Deprioritized — even if positive, expected gain (+0.0005–0.002) is smaller than the risk of another holdout-only-validated change going the wrong way on LB |
+| v014 (hard-negative oversampling) | Not built | Same reasoning — deprioritized given the central finding |
+| v015 (union-rule pruner v2) | Not built | Deprioritized — would need its own LB check to trust, and v005w+GPT-2 already beats every pruned version tried |
+| v016/v017 (French normalization + `blk_ph` phonetic channel) | Code written, never run | Deprioritized for the same reason; code is preserved in `src/` for future use if a submission slot and time remain |
+| v011 (GraLMatch group-coherence) | Not built | Deprioritized |
+| v012 (AnyMatch GPT-2, original spec) | **Superseded** | This is effectively what the parallel GPU instance built and confirmed at 0.977 — the idea worked |
 
-## Version plan — status
+## Immediate priorities (in order)
 
-| Version | What | Result | Status |
-|---|---|---|---|
-| v001–v004 | Baseline through stage-2 fallback + features v3 | LB 0.9310 → 0.9550 | Done |
-| **v005** | Blocking v3 (skeleton/address/reverse channels) + features v4 | **holdout 0.9773, LB 0.9683** | **Done — current best** |
-| v006 | Supervised meta-blocking pruner + features v5 + CatBoost blend + t_blank | holdout 0.9778, **LB 0.9652 (worse)** | Done — not used |
-| v006fr / v005fr | Per-country hybrids of v005/v006 | LB 0.9642 / 0.9640 (both worse than v005) | Done — not used; see open question above |
-| v007 (laptop B) | v006 configuration, final fit 800K S1 | Stopped: inherits v006's regression | Abandoned |
-| v008 (SageMaker) | v006 configuration, full final fit | Stopped: same reason | Abandoned |
-| Large-k blocking experiment | k=30/k_sk=10/k_rev=5, 68 cands/S1 | Ceiling +0.0009 for 6x v006's candidate count; test run OOM'd | Abandoned |
-| **v010** | v005 code (tag `day2-sub2`) final-fit on 600K+ S1 incl. holdout, **unpruned** | Not yet run | **Candidate for final submission if time allows** |
-| **v011** | Group-coherence post-filter (GraLMatch-inspired, Section below) | Not yet built | **Candidate for final submission if time allows** |
-| v012 (parked) | Fine-tuned small LM (AnyMatch-style, GPT-2/124M) trained on India/US labels, applied zero-shot to France | Not started | Stretch only if v010/v011 land early and time remains |
-
-### v010 — final fit on more data (same v005 code, no pruning)
-- Rationale: v005 is trained on only 300K of 1.77M available train-fold S1. More data, same exact
-  configuration that is proven on the leaderboard, is the lowest-risk remaining lever.
-- Run at git tag `day2-sub2` (the exact code that produced v005), with `--final-fit` on 600K–800K
-  S1 including the holdout (no holdout scoring possible for this run — judge by OOF only).
-  **Do not add the v006 pruner, feature v5, or CatBoost/t_blank/fallback-search changes** — those
-  are exactly what regressed on test in v006; keep the proven v005 configuration unchanged and
-  only add data.
-- Test candidates: reuse v005's saved unpruned test blocking output directly (`cand_test_all_v005`).
-- Expected gain: +0.001 to +0.003 over v005, unconfirmed until submitted.
-
-### v011 — group-coherence post-filter (new idea, from GraLMatch, PVLDB-adjacent 2024)
-- For every S1 with 2+ predicted matches, compute pairwise name/address similarity **between the
-  assigned candidates themselves** (not just each candidate vs. S1). A true business's several
-  duplicate records should resemble each other; a false positive sharing only S1's address/name
-  typically looks unlike the *other* accepted candidates.
-- Implementation: a group-coherence feature (min/mean candidate-candidate similarity within the
-  predicted group) added to stage 2, or a post-hoc filter dropping a candidate whose similarity to
-  the rest of its assigned group is far below the group's internal average. Threshold tuned on
-  out-of-fold data only.
-- Targets the largest remaining precision-loss bucket (false positives on shared-address/chain
-  names) with a mechanism not yet tried. Expected +0.001 to +0.004, concentrated on multi-match S1
-  precision. Build on top of whichever base (v005 or v010) is currently best.
-
-### v012 — parked stretch (AnyMatch-style zero-shot for France)
-- Fine-tune GPT-2 (124M params, MIT-licensed, well under the 8B cap) as a match/no-match sequence
-  classifier on our own labelled India/US pairs (Ditto-style serialization); apply zero-shot to
-  French candidate pairs, especially the stage-1 uncertain band (p in 0.3–0.8).
-- Only pursue if v010/v011 land early and a GPU is free; needs a training pipeline and inference
-  over millions of pairs that we have not built. No external data — labels are entirely our own.
-
-## Reviewed and not adopted (reason) — additions since last update
-- **EXC-style reciprocal/mutual-best-choice decision rule** (from Papadakis et al., VLDB J. 2023,
-  one-to-one matching algorithms survey) — does not transfer: that paper's setting is strict
-  one-to-one on both sides, while ours is many-to-one (one S1 can have several true matches). A
-  mutual-best-choice requirement would wrongly reject an S1's legitimate 2nd/3rd match.
-- **Optimal (Hungarian-style) bipartite assignment for the decision step** — same survey found the
-  empirically best-performing rule (UMC: highest-score-wins, unique per S2/S3 record) is exactly
-  what we already do, and that the "principled" optimal-assignment approximation (BAH) performs
-  *worse* in practice. Treated as validation that the decision layer is not the remaining
-  bottleneck; no further engineering effort planned there.
+1. **Document the GPT-2 stage-2 pipeline properly.** See the "Open items" list in
+   `EXPERIMENTS.md` — exact checkpoint, training script, serialization format, how its output
+   combines with the LightGBM stage-2 score, inference scope, and new `requirements.txt` entries
+   (`torch`, `transformers`, versions). This is required both for the official
+   `Documentation_template.md` and for `code/business_entity_resolution/` to actually reproduce
+   the submitted output, which the rules say gets audited.
+2. **Verify license/parameter-count compliance** for the exact GPT-2 checkpoint used (confirm it's
+   a standard MIT-licensed GPT-2 variant, not a substituted non-compliant model).
+3. **Save and tag the winning submission** the same way every other version was: copy
+   `output/*.tsv` to `experiments/<tag>/submission/`, re-verify counts with
+   `check_submission.py --out-dir`, tag the commit.
+4. **Decide the final call:** is v005w+GPT-2 (0.977) locked in as the submission going up last, or
+   is there a specific, already-in-flight change worth one more submission slot? Given the central
+   finding, the bar for "worth another slot" should be high — only submit something with either
+   (a) a mechanism clearly different from the ones that already failed (pruning, added stage-1
+   features), or (b) enough time left to also fall back cleanly to 0.977 if it doesn't pan out.
+5. **Build the submission zip.** Structure: `output/` (the two TSVs from whichever version is
+   final), `code/business_entity_resolution/` (`src/`, `README.md`, `requirements.txt`),
+   `Documentation_template.md` at the zip's top level (not inside `code/`). Run
+   `check_submission.py --out-dir` and the official validator on the files **inside the built zip**
+   before calling it done, not just on the working `output/` folder.
 
 ## France (unlabeled, 15% of test)
-- Keep features language-agnostic (no country feature) — unchanged.
-- Confidence-profile diagnostic (stage-1 p) showed the model is not more uncertain on France than
-  India/US at any version checked; any remaining France gap is confident errors, not a coverage gap.
-- Country-hybrid submissions (this update) were meant to isolate France's contribution cleanly but
-  produced an internally inconsistent result (see "Open question" above) — resolve this before
-  acting on it further, rather than trusting either hybrid's implied France score.
 
-## Submission budget
+- Confidence-profile diagnostic (stage-1 p) showed the model was never more uncertain on France
+  than India/US at any version checked — any France gap has been confident errors, not a coverage
+  gap.
+- Country-hybrid submissions (v006fr, v005fr) were meant to isolate France's contribution cleanly;
+  read together they were internally inconsistent (see prior version of this file / git history
+  for the full weighted-average reconciliation attempt), most likely because the public leaderboard
+  scores only a subset of test, so hybrid submissions built at different times don't necessarily
+  share an identical sample. Not pursued further given the central finding above shifted priority
+  to packaging.
 
-| Day | Status |
-|---|---|
-| Day 1 (25 Sep) | 2 used (v001, v002) |
-| Day 2 (26 Sep) | 4 used (v004, v005, v006, v006fr) + v005fr this update |
-| Day 3 (27 Sep) | Remaining slots: v010 and/or v011 if ready; final upload must be the best-scoring version, submitted last, well before 11:59 PM IST |
+## Compute notes
 
-## Working rules (unchanged) + one addition
-1–7. Unchanged from Day 2 (holdout-first where holdout is informative; one change per version;
-no holdout leakage; validators before every submission; parallel work; drop lower-priority items
-if behind; no network calls at run time).
-8. **New:** after building any per-country or per-version hybrid/combined submission, re-run
-   `check_submission.py --out-dir <saved folder>` and compare its printed counts against the
-   combine script's own table **before** treating the resulting leaderboard score as a clean
-   measurement — this exact class of copy/build error has happened twice already (v006fr's first
-   attempt, and possibly v005fr per the open question above).
-
-## Compute notes (unchanged)
-- Laptop A: 12 CPU cores, 16 GB RAM. Laptop B: available for v010/v011 in parallel. SageMaker:
-  stopped (v006-config final fit abandoned); restart only for v012 if pursued.
-- CPU-bound (GPU cannot help): blocking (sparse top-k), feature building (rapidfuzz).
-- GPU can help: LightGBM/CatBoost training (modest), any v012 fine-tuning (large).
-
----
-
-# Update: external suggestion doc, audited (Day 3, post v005fr)
-
-Source: a teammate/parallel-instance suggestion doc that correctly reads our actual `matcher.py`
-(cites the `decide()` line), so its diagnoses are taken seriously — but three claims in it were
-wrong and are corrected below rather than copied as-is.
-
-## Corrections to the source doc
-
-1. **"Submit v005fr now" is stale.** Already done. Result: **public LB 0.9640** — worse than pure
-   v005 (0.9683), not the ~0.969 the doc predicted. v005fr is not a candidate for final submission.
-2. **The proposed pruner fix is backwards.** "Keep (S1, C) only if C ∈ S1's top-K **and** S1 ∈ C's
-   top-K" is an intersection — it can only remove more pairs, and does nothing for a pair that
-   already failed the first clause, which is exactly the described failure. The real fix (below,
-   v015) is a **union**: also keep C for S1 if S1 ranks well among the S1s competing *for C*
-   specifically (mirroring the existing reverse blocking channel, applied to pruning instead of
-   candidate generation).
-3. **"Confirm via France-labeled holdout" (priority 7) is impossible** — France has zero labels
-   anywhere in train. Validation path is: no India/US holdout regression → unsupervised French
-   diagnostics (`diagnose_country.py`/`diagnose_france.py`) → an actual leaderboard submission.
-
-## Already implemented (source doc lists these as new features to build)
-
-- `name_distinguishing_token` (IDF-weighted unmatched-token count) = our existing
-  `unmatched_idf_a`/`unmatched_idf_b`, in features v5 since v006.
-- `zip_conflict` = our existing `zip_eq` (same information, inverted framing).
-- The doc's own priority 5 ("distinguishing-token feature for the address-collision FP pattern")
-  is therefore already addressed on the feature side; what's left is data-selection (see v014
-  below), not a new feature.
-
-## Root-cause diagnosis for the v006 regression (adopted, corrected)
-
-Per-S1 independent top-K pruning can drop a candidate from its **true owner's** list (crowded S1 —
-more competing candidates — candidate ranks just below the cap) while a **false claimant** with a
-sparser candidate list keeps it. `decide()`'s global `drop_duplicates('cand_id')` then never
-compares the true pair at all — it was never a candidate for its true S1. This fits the measured
-pattern better than the earlier "pruner trained on India/US hurts France" theory: the hybrids
-showed v006's France rows were fine (slightly better than v005's); the loss was specifically on
-India/US, which have more candidates per S1 on average and so are pruned more aggressively.
-
-## New version plan items
-
-### v006np — isolate model gain from pruning damage (do this first; cheapest, highest-value)
-Run v006's features v5, stage-1 (LightGBM, optionally the CatBoost blend) and stage-2 fallback
-search **on v005's full unpruned candidate set** (`--cand-tag v005`, skip `prune.py` entirely).
-Decode with the existing unchanged global uniqueness rule in `matcher.py`. If this recovers or
-beats v005's holdout/LB, it confirms pruning (not the v005→v006 feature/model changes) caused the
-regression, and isolates exactly how much the features alone are worth.
-- Cost: reuses v005's existing test blocking output; no new blocking/pruning code.
-- Success check: holdout ≥ v005's 0.9773; only a leaderboard submission confirms the India/US test
-  recovery, since this is precisely the dynamic holdout has been shown not to fully capture.
-
-### v015 — pruner v2, two-sided (union) keep rule (build only if v006np's LB confirms the diagnosis)
-For each candidate C, also compute its own top-K best S1 (reverse direction — the pruner equivalent
-of the existing reverse blocking channel). Keep pair (S1, C) if **either** C ∈ S1's forward top-K
-**or** S1 ∈ C's reverse top-K. This preserves the candidate-set reduction for the common case while
-specifically rescuing a true pair that a crowded S1 would otherwise drop, because from the
-candidate's side there are usually few real competing S1s (ground truth: each C belongs to ≤ 1
-true S1), so the true S1 is very likely to be at or near C's own top rank even when C isn't near
-the top of S1's crowded list.
-- Threshold/cap chosen on OOF, same discipline as the current pruner.
-- Expected: most of v006's feature-level holdout gain (0.9778) recovered on the leaderboard, at a
-  candidate-set size between v005's 37/S1 and v006's 10.4/S1 — the union rule can only add pairs
-  back relative to pure per-S1 top-K, so exact size depends on how many true pairs were being lost
-  this way; report it, don't assume it in advance.
-
-### v014 — scoped hard-negative oversampling (small, additive to v006np or v015)
-Pull training pairs where blocking score is high (shared house number/address) but the label is
-negative — the "Manya Traders vs Manya Rifle" pattern — and oversample them in the training sample
-construction (not new blocking/pruning infrastructure). Combine with a plain binary
-`house_number_conflict` flag in `features.py` (both sides have a house number and it differs) as a
-cheap complement to the existing continuous `hn_edit`/`hn_logdiff`/`hn_comp_eq` features — low
-individual value, cheap to add alongside the oversampling change.
-
-### v016 — French legal-form/noise-word gaps (from firmmatchr, corrected validation path)
-Add to `LEGAL_ANY`/`LEGAL_TAIL` in `normalization.py`: `sca`, `scs`, `scop`, `scic`, `sem`,
-`societe`/`ste`, `association`, `fondation`, `cooperative`, `groupe`, `entreprise`. Add to a
-name-noise-word list (parallel to the existing `LEAD_DROP`): `et`, `succursale`, `filiale`, `la`,
-`le`, `les`, `du`, `des`, `de`, `aux`, `au`. Validation: (1) rerun the normalization `--eval` and
-confirm no regression on the India/US true-pair/random-pair metrics; (2) rerun `--split test` and
-check the French-specific unsupervised diagnostics (`diagnose_country.py`) for a plausible shift
-(more names getting a `name_legal` token, no drop in candidate recall proxies); (3) the only real
-confirmation is a leaderboard submission, since France has no labels to hold out.
-
-### Blank-address recall (priority 4 in the source doc) — diagnose before building
-The 0.0116-loss blank-address bucket could be a **blocking** problem (candidate never generated) or
-a **decision** problem (candidate present, classifier under-confident with only name evidence) —
-these need different fixes (a new blocking channel vs. a threshold/feature change) and the source
-doc assumed the former without checking. **Before building anything**, read the
-`[cand_blank_addr]` slice already computed in `experiments/v005/error_analysis.txt` (or rerun
-`error_analysis.py`), which reports `recall_in_cands` for this segment specifically — if that
-number is already high, the candidates exist and the fix is threshold/feature-side (push `t_blank`
-further, or a name-only feature emphasis for this segment); if it's low, the fix is a genuine new
-blocking channel as the source doc proposed.
-
-### v013 — cost-sensitive weight search (kept from earlier review of Parambath et al., NeurIPS 2014)
-Not the same as a from-scratch custom asymmetric loss (correctly skipped by the source doc — high
-engineering risk for LightGBM/CatBoost). A cheap `scale_pos_weight`/per-row-weight grid search
-(e.g. 0.5/0.7/1.0/1.4/2.0), reusing cached features (`--reuse-features`), each variant still going
-through the existing full threshold/`t_top`/`t_blank`/fallback search on OOF. Parambath et al.
-found cost-sensitive-and-thresholded beats thresholding-alone empirically; this tests whether that
-gap exists for us. Low priority relative to v006np/v015 above, but cheap enough to run in parallel
-if a machine is free.
-
-## Skipped, confirmed correct by the source doc (no change)
-- BERT cross-encoder / embedding-based semantic matching — parked, correctly deprioritized further
-  given remaining time.
-- Optuna/Bayesian threshold search — the 0.05→0.01 grid already measured at +0.000 to +0.001; no
-  room for a smarter search to find more there.
-- Rotom (data augmentation), DIAL (active learning) — not applicable, we aren't label-constrained.
-
-## Papers referenced in the source doc: review status
-Already read and verdicted earlier in this conversation: the NIPS 2014 F-measure paper, the
-surrogate Fβ loss paper, the ERO/DMO paper (2507.15240), Rotom, DIAL, Binette & Steorts, the
-blocking/filtering survey (1905.06167), the one-to-one/bipartite matching algorithms paper
-(same research cluster as the cited Kirielle & Christen 2112.14030, not independently re-read),
-the legal-form classification paper, GraLMatch, AnyMatch. See earlier verdicts; not repeated here.
-**Not yet read**, cited by the source doc, left for optional follow-up only if hours remain:
-Gemmell/Rubinstein/Chandra (1108.6016), TransClean (2506.04006), DeepBlocker, Ditto, Sudowoodo,
-Peeters & Bizer (LLM-EM), the four address-matching papers.
-
-## Blocking scalability note (for the methodology write-up — accurate as stated, kept)
-Per-(country, state) partitioning avoids cross-country comparison; `sparse_dot_topn` computes only
-top-k per row without materializing the full similarity matrix (holdout: 974s for the full run,
-~37 candidates/S1 average). The one real scale gap: nothing caps the size of a single
-(country, state) partition, and the reverse channel's max observed degree (**6,243** candidates
-for one S1, matching our own recorded `max_candidates_per_s1` in `EXPERIMENTS.md`) shows block skew
-under chain-name conditions. Fixes if asked how this reaches billion-record scale: sub-partition
-oversized blocks by a secondary key; cap degree symmetrically at generation time (this is the same
-principle as v015 above, applied one stage earlier); LSH/MinHash for partitions too large to
-multiply exactly.
+- Laptop A: 12 CPU cores, 16 GB RAM — ran v001–v006np.
+- Laptop B: available, ran the v006-config final-fit attempts (abandoned) and the large-k blocking
+  experiment (abandoned).
+- SageMaker (Linux, CPU): set up for a v006-config final fit, stopped — superseded by the GPU
+  instance's GPT-2 work.
+- **Parallel GPU instance (AWS g5.2xlarge, 1× A10G 23 GB VRAM):** ran the GPT-2 stage-2 fine-tune
+  that produced the current best result (0.977). Known risks on this box, not yet fully mitigated:
+  root disk only ~1.2 GB free (installs must be redirected to `/data`), and `/data` is wiped on
+  instance stop (checkpoint must be copied out before any stop). See
+  `gpu_instance_next_model.md` for the full note written when this was first flagged.

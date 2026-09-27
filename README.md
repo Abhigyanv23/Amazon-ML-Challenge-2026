@@ -27,7 +27,17 @@ dataset/train/train_source1.tsv  train_source2.tsv  train_source3.tsv  train_gro
 dataset/test/test_source1.tsv    test_source2.tsv   test_source3.tsv
 ```
 
-## Best submitted version: v005 (git tag `day2-sub2`, public LB 0.9683)
+## Best confirmed version: v005w + GPT-2 stage 2 (public LB 0.9770)
+
+Built on a parallel GPU instance; the LightGBM-only base (`v005w`, public LB 0.9690) is
+`v005` plus a `name_overlap` feature. **The GPT-2 stage-2 pipeline's exact scripts,
+checkpoint, and integration method still need to be added to `src/` and documented here and
+in `Documentation_template.md` before packaging — see the "Open items" section of
+`experiments/EXPERIMENTS.md`.** Until that's done, the reproducible instructions below build
+`v005`/`v005w` (LightGBM-only, public LB 0.9683 / 0.9690), which is a safe fallback for the
+submission package if the GPT-2 pipeline can't be fully documented/verified in time.
+
+## Reproducible base: v005 (git tag `day2-sub2`, public LB 0.9683)
 
 Run from the repo root at tag `day2-sub2` (`git checkout day2-sub2`), in order:
 
