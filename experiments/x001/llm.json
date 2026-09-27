@@ -1,0 +1,19 @@
+{
+  "stage1": "v005ws1",
+  "tag": "x001",
+  "model": "xlm-roberta-base",
+  "lo": 0.02,
+  "hi": 0.98,
+  "top": 8,
+  "folds": 2,
+  "max_train": 0,
+  "epochs": 2,
+  "bs": 64,
+  "lr": 2e-05,
+  "maxlen": 96,
+  "pos_weight": 1.0,
+  "seed": 0,
+  "bf16": true,
+  "retrain": false,
+  "final_fit": false
+}

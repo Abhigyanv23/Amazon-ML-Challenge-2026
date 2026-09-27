@@ -17,6 +17,8 @@ then
 
 Train mode uses train-fold S1 only (GroupKFold by S1, OOF predictions); holdout labels are never used.
 Model: GPT-2 small (124M, MIT licence) via Hugging Face transformers (Apache 2.0) + PyTorch (BSD).
+Any other sequence-classification checkpoint also works, e.g. --model xlm-roberta-base (MIT, 278M,
+multilingual: the pair is fed as a text pair with the tokenizer's own special tokens); --bf16 recommended.
 Download once (`--model gpt2`, or a local directory for offline runs); no network calls afterwards.
 """
 import argparse
@@ -64,18 +66,32 @@ class Texts:
 
 
 class Encoder:
-    """Tokenizes 'name: .. addr: ..' for both sides; each side truncated to half the budget."""
+    """Tokenizes 'name: .. addr: ..' for both sides; each side truncated to half the budget.
+    GPT-2: a <eos> b. Other models: the tokenizer's own pair format (e.g. <s> a </s></s> b </s>)."""
 
     def __init__(self, tok, maxlen):
-        self.tok, self.half = tok, maxlen // 2
+        self.tok, self.maxlen, self.half = tok, maxlen, maxlen // 2
+        self.gpt = is_gpt2(tok)
 
     def side(self, name, addr):
         ids = self.tok.encode(f" name: {name} addr: {addr}", add_special_tokens=False)
         return ids[:self.half]
 
     def __call__(self, A, B):
-        eos = self.tok.eos_token_id
-        return [self.side(*a) + [eos] + self.side(*b) for a, b in zip(A, B)]
+        if self.gpt:
+            eos = self.tok.eos_token_id
+            return [self.side(*a) + [eos] + self.side(*b) for a, b in zip(A, B)]
+        text = lambda r: f"name: {r[0]} addr: {r[1]}"
+        out = []
+        for i in range(0, len(A), 50_000):       # chunked: one call on millions of pairs needs >20 GB RAM
+            enc = self.tok([text(a) for a in A[i:i + 50_000]], [text(b) for b in B[i:i + 50_000]],
+                           truncation="longest_first", max_length=self.maxlen, return_attention_mask=False)
+            out.extend(np.asarray(x, dtype=np.int32) for x in enc["input_ids"])
+        return out
+
+
+def is_gpt2(tok):
+    return tok.pad_token_id == tok.eos_token_id and tok.eos_token == "<|endoftext|>"
 
 
 def batches(seqs, bs, pad_id, order):
@@ -94,30 +110,39 @@ def batches(seqs, bs, pad_id, order):
 
 def load_model(name):
     import torch
-    from transformers import AutoTokenizer, GPT2ForSequenceClassification
+    from transformers import AutoConfig, AutoModelForSequenceClassification, AutoTokenizer
     tok = AutoTokenizer.from_pretrained(name)
-    tok.pad_token = tok.eos_token
-    model = GPT2ForSequenceClassification.from_pretrained(name, num_labels=1)
+    if AutoConfig.from_pretrained(name).model_type == "gpt2":
+        tok.pad_token = tok.eos_token
+    model = AutoModelForSequenceClassification.from_pretrained(name, num_labels=1)
     model.config.pad_token_id = tok.pad_token_id
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     return tok, model.to(dev), dev
 
 
 def last_logit(model, ids, att):
-    """Logit at the last real token (right padding; pad == eos, so do not rely on pad_token_id)."""
+    """GPT-2: logit at the last real token (right padding; pad == eos, so do not rely on pad_token_id).
+    Other models: their own classification head."""
     import torch
+    if model.config.model_type != "gpt2":
+        return model(input_ids=ids, attention_mask=att).logits.squeeze(-1)
     h = model.transformer(input_ids=ids, attention_mask=att).last_hidden_state
     last = att.sum(1) - 1
     return model.score(h[torch.arange(len(ids), device=ids.device), last]).squeeze(-1)
 
 
-def predict(model, dev, seqs, pad_id, bs):
+def amp_dtype(dev, bf16):
+    import torch
+    return torch.bfloat16 if (bf16 or dev != "cuda") else torch.float16
+
+
+def predict(model, dev, seqs, pad_id, bs, bf16=False):
     import torch
     model.eval()
     order = np.argsort([len(s) for s in seqs], kind="stable")      # length-sorted = less padding
     out = np.zeros(len(seqs), np.float32)
     t, done = time.time(), 0
-    with torch.no_grad(), torch.autocast(dev, dtype=torch.float16 if dev == "cuda" else torch.bfloat16):
+    with torch.no_grad(), torch.autocast(dev, dtype=amp_dtype(dev, bf16)):
         for idx, ids, att in batches(seqs, bs, pad_id, order):
             out[idx] = last_logit(model, ids.to(dev), att.to(dev)).float().cpu().numpy()
             done += len(idx)
@@ -135,7 +160,7 @@ def train_one(a, seqs, y, pad_id, out_dir):
     steps = a.epochs * ((len(seqs) + a.bs - 1) // a.bs)
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=a.lr, total_steps=steps, pct_start=0.06,
                                                 anneal_strategy="linear")
-    scaler = torch.amp.GradScaler(enabled=dev == "cuda")
+    scaler = torch.amp.GradScaler(enabled=dev == "cuda" and not a.bf16)
     pos_w = torch.tensor(a.pos_weight, device=dev)
     model.train()
     step, t = 0, time.time()
@@ -149,7 +174,7 @@ def train_one(a, seqs, y, pad_id, out_dir):
         loss_sum = 0.0
         for idx, ids, att in batches(seqs, a.bs, pad_id, np.concatenate(blocks)):
             yt = torch.tensor(y[idx], dtype=torch.float32, device=dev)
-            with torch.autocast(dev, dtype=torch.float16 if dev == "cuda" else torch.bfloat16):
+            with torch.autocast(dev, dtype=amp_dtype(dev, a.bf16)):
                 logit = last_logit(model, ids.to(dev), att.to(dev)).float()
             loss = torch.nn.functional.binary_cross_entropy_with_logits(logit, yt, pos_weight=pos_w)
             opt.zero_grad(set_to_none=True)
@@ -223,7 +248,7 @@ def run_train(a):
             _, model, dev = load_model(d)
         else:
             model, dev = train_one(a, [seqs[i] for i in tr], y[tr], tok.pad_token_id, d)
-        oof[va] = predict(model, dev, [seqs[i] for i in va], tok.pad_token_id, a.bs * 4)
+        oof[va] = predict(model, dev, [seqs[i] for i in va], tok.pad_token_id, a.bs * 4, a.bf16)
         print(f"  fold {fold} done ({time.time() - t:.0f}s)")
         del model
     report(c.p.to_numpy(), oof, y)
@@ -243,7 +268,7 @@ def run_predict(a, split, s1set):
     for fold in range(cfg["folds"]):
         tok, model, dev = load_model(os.path.join("models", a.tag, f"gpt2_fold{fold}"))
         seqs = Encoder(tok, cfg["maxlen"])(*texts)
-        logits.append(predict(model, dev, seqs, tok.pad_token_id, cfg["bs"] * 4))
+        logits.append(predict(model, dev, seqs, tok.pad_token_id, cfg["bs"] * 4, cfg.get("bf16", False)))
         del model
     save(c, np.mean(logits, axis=0), split, s1set, a.tag)
 
@@ -265,6 +290,7 @@ def main():
     ap.add_argument("--maxlen", type=int, default=96)
     ap.add_argument("--pos-weight", type=float, default=1.0)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--bf16", action="store_true", help="bfloat16 autocast instead of fp16 + loss scaling")
     ap.add_argument("--retrain", action="store_true", help="ignore saved fold models")
     ap.add_argument("--final-fit", action="store_true", help="stage-1 OOF came from a final-fit run (includes holdout)")
     a = ap.parse_args()

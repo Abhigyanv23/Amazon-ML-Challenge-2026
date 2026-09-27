@@ -114,10 +114,10 @@ class Stage2Builder:
         X["p1_sum"] = np.repeat(np.add.reduceat(p, starts[:-1]), size)
         X["n_cands"] = np.repeat(size, size)
         X["is_s3"] = c.cand_id.str.startswith("S3-").to_numpy()
-        if "p_llm" in c.columns:
-            q = c.p_llm.to_numpy(np.float32)
-            X["p_llm"] = q
-            X["llm_gap"] = pd.Series(q).groupby(s).transform("max").to_numpy() - q
+        for col in [x for x in c.columns if x.startswith("p_llm")]:      # p_llm, p_llm_<tag2>, ...
+            q = c[col].to_numpy(np.float32)
+            X[col] = q
+            X["llm_gap" + col[5:]] = pd.Series(q).groupby(s).transform("max").to_numpy() - q
         return X.astype(np.float32)
 
 
@@ -129,10 +129,11 @@ def apply_fallback(c, p2):
 
 def load_p1(split, s1set, stage1, llm=None):
     c = pd.read_parquet(p1_path(split, s1set, stage1))
-    if llm:
-        q = pd.read_parquet(llm_path(split, s1set, llm))
+    for i, tag in enumerate(llm.split(",") if llm else []):     # first tag -> p_llm, others -> p_llm_<tag>
+        col = "p_llm" if i == 0 else f"p_llm_{tag}"
+        q = pd.read_parquet(llm_path(split, s1set, tag)).rename(columns={"p_llm": col})
         c = c.merge(q, on=["s1_id", "cand_id"], how="left", validate="one_to_one")
-        print(f"  gpt2 {llm}: {c.p_llm.notna().sum()} of {len(c)} pairs scored")
+        print(f"  llm {tag}: {c[col].notna().sum()} of {len(c)} pairs scored")
     return c.sort_values(["s1_id", "p"], ascending=[True, False], kind="stable").reset_index(drop=True)
 
 
@@ -252,7 +253,7 @@ def main():
     ap.add_argument("mode", choices=["train", "holdout", "test"])
     ap.add_argument("--stage1", default="v002")
     ap.add_argument("--tag", default="v003")
-    ap.add_argument("--llm", default=None, help="tag of llm_rescore.py GPT-2 scores to add as features")
+    ap.add_argument("--llm", default=None, help="llm_rescore.py tag(s) to add as features, comma-separated (e.g. g001,x001)")
     ap.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 1))
     ap.add_argument("--final-fit", action="store_true", help="stage-1 OOF came from a final-fit run (includes holdout)")
     a = ap.parse_args()
