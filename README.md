@@ -27,15 +27,22 @@ dataset/train/train_source1.tsv  train_source2.tsv  train_source3.tsv  train_gro
 dataset/test/test_source1.tsv    test_source2.tsv   test_source3.tsv
 ```
 
-## Best confirmed version: v005w + GPT-2 stage 2 (public LB 0.9770)
+## Best confirmed version: v005w + GPT-2 stage 3 (public LB 0.9770)
 
-Built on a parallel GPU instance; the LightGBM-only base (`v005w`, public LB 0.9690) is
-`v005` plus a `name_overlap` feature. **The GPT-2 stage-2 pipeline's exact scripts,
-checkpoint, and integration method still need to be added to `src/` and documented here and
-in `Documentation_template.md` before packaging — see the "Open items" section of
-`experiments/EXPERIMENTS.md`.** Until that's done, the reproducible instructions below build
-`v005`/`v005w` (LightGBM-only, public LB 0.9683 / 0.9690), which is a safe fallback for the
-submission package if the GPT-2 pipeline can't be fully documented/verified in time.
+**Two environments are tracking results independently as of Day 3** — this repo (`main`, laptop A)
+and a parallel GPU system. Join results by **version name**, not `dayN-subM` tag, since each
+environment numbers its own submissions locally; see `experiments/EXPERIMENTS.md`'s submission tag
+mapping for the current picture, including an outstanding second parallel-account result not yet
+reported here.
+
+Built on the parallel GPU instance (AWS g5.2xlarge, 1× A10G): the LightGBM-only base (`v005w`,
+public LB 0.9690, itself `v005` + a `name_overlap` feature) plus a fine-tuned GPT-2 stage-3
+rescoring pass. **The GPT-2 pipeline's exact checkpoint, training script, integration method with
+stage 2, and inference scope are not yet documented in this repo or in `Documentation_template.md`
+— see that document's `[CONFIRM: ...]` markers and the "Open items" section of
+`experiments/EXPERIMENTS.md`.** Until those are filled in and verified reproducible, the
+instructions below build `v005`/`v005w` (LightGBM-only, public LB 0.9683 / 0.9690), a fully
+documented, zero-open-questions fallback for the submission package.
 
 ## Reproducible base: v005 (git tag `day2-sub2`, public LB 0.9683)
 
