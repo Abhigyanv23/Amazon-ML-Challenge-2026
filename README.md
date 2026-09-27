@@ -1,112 +1,89 @@
-# Amazon ML Challenge 2026 — Business Entity Resolution
+# Amazon ML Challenge 2026 — Business Entity Resolution (team Sunshine)
 
 For every Source 1 business record, find all matching records in Source 2 and Source 3.
 Scored by per-entity F0.5, macro-averaged over Source 1.
 
-Uses **only** the competition-provided data. No external lookups, APIs, geocoding or scraping.
+**Final submission: v009** — holdout F0.5 **0.9857**, public leaderboard **0.980893**.
+
+Only the competition-provided data is used: no external lookups, APIs, geocoding or scraping.
+Two pretrained checkpoints (GPT-2 small and XLM-RoBERTa-base, both MIT) are fine-tuned on the
+provided training pairs; their weights are downloaded once at setup.
 
 ## Setup
 
-Python 3.10+ (Windows PowerShell shown; use `python3` / `/` on Mac/Linux). 12 cores / 16 GB RAM tested.
+Linux, Python 3.12 (tested 3.12.3). A CUDA GPU is needed for step 5 (cross-encoders); v009 was run
+on an NVIDIA A10G (24 GB) with 8 vCPU / 32 GB RAM for steps 5-6. With a smaller GPU lower `--bs`.
 
-```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-$env:PYTHONIOENCODING="utf-8"
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt          # pinned; PyTorch from the CUDA 12.8 index
+export HF_HOME=$PWD/.hf_cache            # optional: where GPT-2 / XLM-R weights are cached
 ```
 
-Place the data (not committed to git):
+Place the data (not included):
 
 ```
 dataset/train/train_source1.tsv  train_source2.tsv  train_source3.tsv  train_ground_truth.tsv
 dataset/test/test_source1.tsv    test_source2.tsv   test_source3.tsv
 ```
 
-## Pipeline (run from repo root, in order) — current best: v002 (v003 in progress)
+## Reproduce the submission end to end
 
-| Step | Command | Output | Time |
-|---|---|---|---|
-| 0. EDA (optional) | `python src\data_inspection.py --data-dir dataset` | report to stdout | ~10 min |
-| 1. Holdout split (run once, frozen) | `python src\make_split.py` | `experiments/splits/*_s1_ids.txt` | 1 min |
-| 2. Scorer self-test | `python src\validate_local.py --selftest` | F0.5 = 1.0000 / 0.0558 | 1 min |
-| 3. Normalize | `python src\normalization.py --split train` then `--split test` | `experiments/cache/*_source{1,2,3}.parquet` | ~5 min each |
-| 4. Blocking: holdout (recall) | `python src\blocking.py --split train --s1-set holdout --tag v002` | candidates + `experiments/v002/blocking_holdout.json` | ~16 min |
-| 5. Blocking: train sample | `python src\blocking.py --split train --s1-set train --sample 300000 --tag v002` | training candidates | ~16 min |
-| 6. Train matcher (stage 1) | `python src\matcher.py train --tag v002` | `models/v002/lgbm.txt`, `experiments/v002/decision.json`, OOF probabilities | ~30 min |
-| 7. Score holdout | `python src\matcher.py holdout --tag v002` | `experiments/v002/holdout_metrics.json` | ~8 min |
-| 8. Blocking: test | `python src\blocking.py --split test --tag v002` | test candidates | ~35 min |
-| 9. Predict test | `python src\matcher.py test --tag v002` | `output/candidate_pairs.tsv`, `output/matching_results.tsv` | ~28 min |
-| 10. Local format check | `python src\check_submission.py` | PASS | 2 min |
-| 11. Official check | `python utils\validate_submission.py --matching output\matching_results.tsv --candidate output\candidate_pairs.tsv --test-dir dataset\test --check-ids` | must print PASS | 2 min |
+One command, run from this folder: `bash src/run_all.sh`. It runs these steps in order (exact flags):
 
-Stage 2 (v003, after steps 6, 7 and 9 have saved stage-1 probabilities):
+| Step | Command | Output |
+|---|---|---|
+| 1. Frozen holdout split | `python src/make_split.py` (seed 42; files included in `experiments/splits/`) | `experiments/splits/*_s1_ids.txt` |
+| 2. Normalize | `python src/normalization.py --split train`, then `--split test` | `experiments/cache/*_source{1,2,3}.parquet` |
+| 3. Blocking (v005w) | `python src/blocking.py --split train --s1-set holdout $BLK`<br>`python src/blocking.py --split train --s1-set train --sample 300000 $BLK`<br>`python src/blocking.py --split test $BLK`<br>with `BLK="--k 30 --k-tri 10 --k-nl 5 --k-sk 10 --k-ad 5 --k-rev 5 --tag v005w"` | candidate tables; `experiments/v005w/blocking_*.json` |
+| 4. Stage 1 (v005ws1) | `python src/matcher.py train\|holdout\|test --tag v005ws1 --cand-tag v005w --k 30 --folds 5` | `models/v005ws1/`, stage-1 probabilities `experiments/cache/p1_*_v005ws1.parquet` |
+| 5a. GPT-2 (g001) | `python src/llm_rescore.py train --stage1 v005ws1 --tag g001 --bs 64 --max-train 0 --epochs 2`, then `holdout --tag g001`, `test --tag g001` | `models/g001/`, `experiments/cache/llm_*_g001.parquet` |
+| 5b. XLM-R (x001) | `python src/llm_rescore.py train --stage1 v005ws1 --tag x001 --model xlm-roberta-base --bs 64 --max-train 0 --epochs 2 --lr 2e-5 --bf16`, then `holdout --tag x001`, `test --tag x001` | `models/x001/`, `experiments/cache/llm_*_x001.parquet` |
+| 6. Stage 2 (v009) | `python src/stage2.py train\|holdout\|test --stage1 v005ws1 --tag v009 --llm g001,x001` | `models/v009/`, **`output/matching_results.tsv`, `output/candidate_pairs.tsv`** |
+| 7. Checks | `python src/check_submission.py`; `python utils/validate_submission.py --matching output/matching_results.tsv --candidate output/candidate_pairs.tsv --test-dir dataset/test --check-ids` | must print PASS |
 
-```powershell
-python src\stage2.py train   --stage1 v002 --tag v003
-python src\stage2.py holdout --stage1 v002 --tag v003
-python src\stage2.py test    --stage1 v002 --tag v003   # overwrites output/*.tsv; re-run steps 10-11
-```
-
-Stage 2 with transformer cross-encoders (v009, current best; needs `requirements-llm.txt` + CUDA torch).
-GPT-2 small (g001) and XLM-RoBERTa-base (x001) are fine-tuned as pair classifiers on uncertain pairs only
-(stage-1 p in [0.02, 0.98], top 8 per S1; 2 folds by S1). Their probabilities are stage-2 features.
-Commands as run for v009 (AWS g5.2xlarge, A10G 24 GB; lower `--bs` on smaller GPUs):
-
-```bash
-python src/llm_rescore.py count   --stage1 v005ws1                  # band sizes
-python src/llm_rescore.py train   --stage1 v005ws1 --tag g001 --bs 64 --max-train 0 --epochs 2
-python src/llm_rescore.py holdout --tag g001
-python src/llm_rescore.py test    --tag g001
-python src/llm_rescore.py train   --stage1 v005ws1 --tag x001 --model xlm-roberta-base \
-       --bs 64 --max-train 0 --epochs 2 --lr 2e-5 --bf16
-python src/llm_rescore.py holdout --tag x001
-python src/llm_rescore.py test    --tag x001
-python src/stage2.py train   --stage1 v005ws1 --tag v009 --llm g001,x001
-python src/stage2.py holdout --stage1 v005ws1 --tag v009
-python src/stage2.py test    --stage1 v005ws1 --tag v009    # writes output/*.tsv
-```
-
-Timings on the A10G: each cross-encoder trains in ~25-30 min and scores the 2.4M test band pairs in
-30-60 min; stage 2 takes ~40 min per split on 8 vCPU.
-
-Blocking defaults: word channel k=20, trigram channel `--k-tri 10`, non-Latin address channel `--k-nl 5`.
-
-Diagnostics (labels used only for analysis, never for training):
-`python src\normalization.py --demo` / `--eval`, `python src\diagnose_blocking.py --tag v002`,
-`python src\diagnose_country.py --tag v002` (unsupervised, test set).
+Run all commands from this folder with `PYTHONPATH=src` (set by `run_all.sh`). The `holdout` modes
+score the frozen holdout and write `experiments/<tag>/holdout_metrics.json`; they are not needed for the
+test output but reproduce the reported numbers. Measured times on the A10G machine: each cross-encoder
+trains in 25-30 min (2 folds x 2 epochs) and scores the 2.4M uncertain test pairs in 30-60 min; stage 2
+takes about 40 min per split on 8 vCPU.
 
 ## Method in one paragraph
 
-Records are normalized (Unicode/accents, legal suffixes, street and state abbreviations, postcodes
-separated from house numbers); missing states are filled from an address-component → state map
-learned from the same split's Source 1 text. Candidates come from three channels per
-(country, state) block — IDF-weighted word tokens, character trigrams of the name, and an
-address-only channel for non-Latin names — keeping the top-k of each. A LightGBM classifier scores
-each pair from string-similarity, address-agreement and blocking features. Matches are decided by a
-probability threshold, a singleton gate and a one-Source-1-per-candidate rule, tuned for macro F0.5
-on out-of-fold predictions. Details: `Documentation_template.md`.
+Records are normalized (Unicode/accents, legal suffixes, street and state abbreviations, postcodes and
+composite house numbers, an Indic-to-Latin consonant skeleton); missing states are filled from an
+address-component -> state map learned from the same split's Source 1 text. Six unsupervised blocking
+channels per (country, state) block — IDF-weighted words, name trigrams, skeleton trigrams, address-only,
+non-Latin address, and a reverse channel (each S2/S3 record's best S1s) — give 68 candidates per S1 at
+99.1% candidate recall. Stage 1 is a LightGBM pair classifier on 71 string/address/blocking features.
+For the uncertain pairs (stage-1 p in [0.02, 0.98], top 8 per S1) two cross-encoders — GPT-2 small and
+XLM-RoBERTa-base — are fine-tuned on the raw "name + address" text of both records. Stage 2 is a second
+LightGBM combining stage-1 probability, group-consistency features (agreement with the S1's other
+confident candidates) and the two cross-encoder probabilities. Matches are decided by a probability
+threshold, a singleton gate and a one-Source-1-per-candidate rule, all tuned for macro F0.5 on
+out-of-fold predictions. Details: `Documentation_template.md`.
 
 ## Validation discipline
 
-- 20% of train Source 1 IDs form a frozen holdout (stratified by country × match count).
-- Model training and threshold tuning use the train fold only; the holdout is scored once per version.
-- Every artifact carries a version tag (`v001`, `v002`, ...). See `experiments/EXPERIMENTS.md`.
-- Each submitted version: files copied to `experiments/<tag>/submission/`, commit tagged (`day1-sub1`, ...).
+- 20% of train Source 1 IDs form a frozen holdout (stratified by country x match count, seed 42).
+- All models (stage 1, cross-encoders, stage 2) train on train-fold S1 only, with group-by-S1
+  out-of-fold predictions feeding the next stage; thresholds are tuned on out-of-fold predictions.
+  The holdout is scored once per version and never used for training or tuning.
+- Every artifact carries a version tag; the full log is `experiments/EXPERIMENTS.md`.
 
-## Repo layout
+## Layout
 
 ```
-src/            pipeline code
-experiments/    splits, per-version metrics, EXPERIMENTS.md (cache/ is git-ignored)
-models/         trained models (git-ignored)
-output/         submission TSVs (git-ignored)
+src/            pipeline code (run_all.sh = end-to-end)
+experiments/    frozen split, per-version configs and metrics, EXPERIMENTS.md (cache/ is generated)
+models/         trained models (generated)
+output/         submission TSVs (generated)
 utils/          organizer-provided validator (unmodified)
 ```
 
 ## Licences
 
-LightGBM (MIT), rapidfuzz (MIT), sparse_dot_topn (Apache 2.0), scikit-learn/pandas/numpy/scipy (BSD),
-pyarrow (Apache 2.0). Stage-2 rescoring (v008/v009) uses pretrained checkpoints
-GPT-2 small (MIT, 124M) and XLM-RoBERTa-base (MIT, 278M), fine-tuned on the provided training data only, via
-transformers (Apache 2.0) and PyTorch (BSD). Weights are downloaded once at setup; no lookups at run time.
+Models: GPT-2 small (MIT, 124M parameters), XLM-RoBERTa-base (MIT, 278M), LightGBM (MIT). All within the
+rule "MIT/Apache 2.0 licence, up to 8 billion parameters". Libraries: transformers, tokenizers,
+safetensors, pyarrow (Apache 2.0); PyTorch, scikit-learn, pandas, numpy, scipy (BSD); rapidfuzz (MIT);
+sparse_dot_topn (Apache 2.0); CatBoost (Apache 2.0, optional, unused in v009).

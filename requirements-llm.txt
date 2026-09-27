@@ -1,4 +1,0 @@
-# Optional: GPT-2 stage-2 rescoring (src/llm_rescore.py). Install torch with CUDA from pytorch.org, e.g.
-#   pip install torch --index-url https://download.pytorch.org/whl/cu124
-#   pip install -r requirements-llm.txt
-transformers>=4.44
