@@ -48,6 +48,19 @@ python src\stage2.py holdout --stage1 v002 --tag v003
 python src\stage2.py test    --stage1 v002 --tag v003   # overwrites output/*.tsv; re-run steps 10-11
 ```
 
+Optional GPT-2 cross-encoder for stage 2 (v008; needs `requirements-llm.txt` + CUDA torch). GPT-2 scores only
+uncertain pairs (stage-1 p in [0.02, 0.98], top 8 per S1); its probability is added to stage 2 as a feature:
+
+```powershell
+python src\llm_rescore.py count   --stage1 v005ws1              # band sizes, decide --lo/--hi/--top
+python src\llm_rescore.py train   --stage1 v005ws1 --tag g001  # 2-fold by S1 -> OOF p_llm (models/g001/)
+python src\llm_rescore.py holdout --tag g001
+python src\llm_rescore.py test    --tag g001
+python src\stage2.py train   --stage1 v005ws1 --tag v008 --llm g001
+python src\stage2.py holdout --stage1 v005ws1 --tag v008
+python src\stage2.py test    --stage1 v005ws1 --tag v008
+```
+
 Blocking defaults: word channel k=20, trigram channel `--k-tri 10`, non-Latin address channel `--k-nl 5`.
 
 Diagnostics (labels used only for analysis, never for training):
@@ -85,4 +98,5 @@ utils/          organizer-provided validator (unmodified)
 ## Licences
 
 LightGBM (MIT), rapidfuzz (MIT), sparse_dot_topn (Apache 2.0), scikit-learn/pandas/numpy/scipy (BSD),
-pyarrow (Apache 2.0). No pretrained models are used.
+pyarrow (Apache 2.0). Optional stage-2 rescoring (v008) uses the pretrained GPT-2 small checkpoint (MIT, 124M)
+via transformers (Apache 2.0) and PyTorch (BSD); without `--llm` no pretrained models are used.

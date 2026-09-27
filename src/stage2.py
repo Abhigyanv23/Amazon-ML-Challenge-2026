@@ -13,6 +13,8 @@ Inputs: stage-1 probabilities written by matcher.py (experiments/cache/p1_*_<sta
 Holdout labels are never used for training or tuning.
 v004: optional fallback — S1 groups with <= FB_MAX stage-1 probabilities >= P_MIN use the stage-1
 probability instead of stage 2 (stage 2 has no support signal there). Chosen on OOF only.
+v008: optional --llm <tag> adds GPT-2 cross-encoder scores from llm_rescore.py (p_llm, llm_gap);
+pairs outside the GPT-2 band are NaN (missing). Train uses OOF p_llm; holdout/test use fold averages.
 """
 import argparse
 import json
@@ -29,6 +31,7 @@ from sklearn.model_selection import GroupKFold
 
 from data_loading import load_normalized, load_split_ids
 from features import iter_chunks
+from llm_rescore import llm_path
 from matcher import PARAMS, decide, p1_path, to_map, true_pairs, tune, write_tsv
 from validate_local import print_metrics, score
 
@@ -111,6 +114,10 @@ class Stage2Builder:
         X["p1_sum"] = np.repeat(np.add.reduceat(p, starts[:-1]), size)
         X["n_cands"] = np.repeat(size, size)
         X["is_s3"] = c.cand_id.str.startswith("S3-").to_numpy()
+        if "p_llm" in c.columns:
+            q = c.p_llm.to_numpy(np.float32)
+            X["p_llm"] = q
+            X["llm_gap"] = pd.Series(q).groupby(s).transform("max").to_numpy() - q
         return X.astype(np.float32)
 
 
@@ -120,8 +127,12 @@ def apply_fallback(c, p2):
     return np.where(n_conf <= FB_MAX, c.p1.to_numpy(), p2).astype(np.float32)
 
 
-def load_p1(split, s1set, stage1):
+def load_p1(split, s1set, stage1, llm=None):
     c = pd.read_parquet(p1_path(split, s1set, stage1))
+    if llm:
+        q = pd.read_parquet(llm_path(split, s1set, llm))
+        c = c.merge(q, on=["s1_id", "cand_id"], how="left", validate="one_to_one")
+        print(f"  gpt2 {llm}: {c.p_llm.notna().sum()} of {len(c)} pairs scored")
     return c.sort_values(["s1_id", "p"], ascending=[True, False], kind="stable").reset_index(drop=True)
 
 
@@ -135,7 +146,7 @@ def featurize(sb, c, workers):
 
 
 def run_train(a, workers):
-    c = load_p1("train", "train", a.stage1)
+    c = load_p1("train", "train", a.stage1, a.llm)
     if "label" not in c.columns:
         raise SystemExit("train p1 file has no labels - re-run matcher.py train with the latest matcher.py")
     scope = c.s1_id.unique()
@@ -178,7 +189,7 @@ def run_train(a, workers):
     print("  top features (gain):\n" + (imp.head(12) / imp.sum()).round(3).to_string())
     os.makedirs(os.path.join("experiments", a.tag), exist_ok=True)
     with open(os.path.join("experiments", a.tag, "decision.json"), "w", encoding="utf-8") as f:
-        json.dump({"stage1": a.stage1, "t": t, "t_top": t_top, "oof_F0.5": best_f, "features": feats,
+        json.dump({"stage1": a.stage1, "llm": a.llm, "t": t, "t_top": t_top, "oof_F0.5": best_f, "features": feats,
                    "fallback": bool(fallback), "FB_MAX": FB_MAX,
                    "oof_plain": best_plain[0], "oof_fallback": best_fb[0],
                    "iters": iters, "M_TOP": M_TOP, "P_MIN": P_MIN}, f, indent=2)
@@ -189,7 +200,7 @@ def _predict(a, split, s1set, workers):
     with open(os.path.join("experiments", a.tag, "decision.json"), encoding="utf-8") as f:
         dec = json.load(f)
     booster = lgb.Booster(model_file=os.path.join("models", a.tag, "lgbm_stage2.txt"))
-    c = load_p1(split, s1set, dec["stage1"])
+    c = load_p1(split, s1set, dec["stage1"], dec.get("llm"))
     sb = Stage2Builder(split)
     ps = []
     for ch in iter_chunks(c, CHUNK):
@@ -241,6 +252,7 @@ def main():
     ap.add_argument("mode", choices=["train", "holdout", "test"])
     ap.add_argument("--stage1", default="v002")
     ap.add_argument("--tag", default="v003")
+    ap.add_argument("--llm", default=None, help="tag of llm_rescore.py GPT-2 scores to add as features")
     ap.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 1))
     ap.add_argument("--final-fit", action="store_true", help="stage-1 OOF came from a final-fit run (includes holdout)")
     a = ap.parse_args()

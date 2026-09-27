@@ -11,6 +11,8 @@ Never change more than one major component per version without noting it.
 | v003 | 26 Sep | Stage-2 group-consistency rescoring on v002 stage-1 probabilities | 0.968 | 0.989 | 0.9580 | 0.988 / 0.920 | 0.963 | not submitted | v003-holdout-0.9580 |
 | v004 | 26 Sep | Features v3 (IDF alignment, name specificity, house-number distance, n-gram cosine) + stage-2 fallback; v002 candidates | 0.968 | 0.989 | 0.9667 | 0.992 / 0.929 | 0.965 | 0.9550 | day2-sub1 |
 | v005 | 26 Sep | Normalization v3 + blocking v3 (skeleton/address/reverse channels) + features v4 | 0.988 | 0.996 | 0.9773 | 0.994 / 0.951 | 0.970 | 0.9683 | day2-sub2 |
+| v005w | 27 Sep | Wider blocking (k30/sk10/rev5) + name_overlap feature | 0.991 | 0.997 | 0.9773 | 0.993 / 0.952 | 0.969 | — | — |
+| v008 | 27 Sep | GPT-2 cross-encoder score (g001) as stage-2 feature, on v005w/v005ws1 | 0.991 | 0.997 | 0.9835 | 0.996 / 0.962 | 0.986 | 0.9768 | — |
 
 Public leaderboard leader (26 Sep): 0.988419.
 
@@ -91,3 +93,19 @@ Public leaderboard leader (26 Sep): 0.988419.
 - Issue: reverse channel lets one S1 collect many candidates (max 6,243; avg 37.4) -> pruner in v006.
 - Submission (day2-sub2): public LB 0.9683 (v004 0.9550, +0.0133; holdout +0.0106).
   Implied France F0.5 ~0.927 (from ~0.912): first France gain; holdout-LB gap 0.009 (was 0.012).
+
+## v008 — GPT-2 cross-encoder in stage 2 (AWS g5.2xlarge, A10G)
+- `src/llm_rescore.py` (tag g001): GPT-2 small (124M, MIT) fine-tuned as a pair classifier on raw
+  "name: .. addr: .." text of both records. Only uncertain pairs: stage-1 p in [0.02, 0.98], top 8 per S1
+  (train 346K of 20.4M pairs, 32.7% positive; holdout 509K; test 2.44M). 2-fold GroupKFold by S1, 2 epochs,
+  bs 64, lr 3e-5, fp16; ~455 pairs/s training, ~2K pairs/s inference; 30 min train.
+- OOF on band pairs: AUC stage-1 0.9256 / GPT-2 0.9430 / mean 0.9623; logloss 0.3108 / 0.2815.
+- Stage 2 (`stage2.py --llm g001`, features p_llm + llm_gap; NaN outside band): OOF 0.9827 (v005w 0.9765,
+  reproduced on this instance); plain stage 2 now beats the fallback. Gain: p1 0.841, p1_rank 0.114, p_llm 0.024.
+- Holdout: F0.5 0.9835 (v005w 0.9773); precision 0.996, recall 0.962; singleton acc 0.986 (0.969);
+  1-match S1 0.941 (0.927); India 0.9800 (+0.009), US 0.9857 (+0.005).
+
+- Submission (27 Sep): public LB 0.976812 (v005 0.9683, +0.0085; holdout +0.0062 vs v005w). Holdout-LB gap 0.0067 (was 0.009).
+- Remaining holdout errors (pairs among candidates, 51,230): 79% inside the GPT-2 band (35.8K FN / 4.7K FP),
+  14% just outside (p1 0.005-0.02 / 0.98-0.995), 7% far outside; plus 13,545 true pairs never blocked.
+  -> next: second, multilingual cross-encoder (XLM-R) on the same band rather than a wider band.
