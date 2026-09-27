@@ -48,6 +48,22 @@ test output but reproduce the reported numbers. Measured times on the A10G machi
 trains in 25-30 min (2 folds x 2 epochs) and scores the 2.4M uncertain test pairs in 30-60 min; stage 2
 takes about 40 min per split on 8 vCPU.
 
+### v010a (evaluated after the final submission; holdout 0.9860, not submitted as final)
+
+Same pipeline up to step 5b, then:
+
+```bash
+python src/llm_rescore.py extend --src x001 --tag x001w --lo2 0.005 --hi2 0.995  # x001 fold models also score p1 0.005-0.02 / 0.98-0.995
+python src/stage2.py cache   --stage1 v005ws1                                      # optional: prebuild stage-2 base features (reruns in minutes)
+python src/stage2.py train   --stage1 v005ws1 --tag v010a --llm g001,x001w
+python src/stage2.py holdout --stage1 v005ws1 --tag v010a
+python src/stage2.py test    --stage1 v005ws1 --tag v010a --p1-min 0.001           # stage 2 only for pairs with stage-1 p >= 0.001
+```
+
+`--p1-min 0.001` gives the kept pairs exactly the same features as a full run and sets p2 = 0 for the other
+~90% of test pairs (on the holdout, pairs below 0.005 produced 2 false matches out of 27.7M).
+`scripts/run_*.sh` are the orchestration scripts used on the AWS machine (they assume its `/data` layout).
+
 ## Method in one paragraph
 
 Records are normalized (Unicode/accents, legal suffixes, street and state abbreviations, postcodes and

@@ -12,6 +12,7 @@ already right, and 30M+ test pairs are far too many for a 4 GB laptop GPU.
   python src/llm_rescore.py train   --stage1 v005ws1 --tag g001     # K-fold by S1 -> OOF p_llm
   python src/llm_rescore.py holdout --stage1 v005ws1 --tag g001     # average of fold models
   python src/llm_rescore.py test    --stage1 v005ws1 --tag g001
+  python src/llm_rescore.py extend  --src x001 --tag x001w --lo2 0.005 --hi2 0.995   # wider band, no retraining
 then
   python src/stage2.py train|holdout|test --stage1 v005ws1 --tag v008 --llm g001
 
@@ -258,6 +259,73 @@ def run_train(a):
         json.dump({k: v for k, v in vars(a).items() if k != "mode"}, f, indent=2)
 
 
+def extra_band(c, lo, hi, lo2, hi2, top):
+    """Pairs just outside the band: lo2 <= p1 < lo or hi < p1 <= hi2, at most `top` per S1."""
+    c = c[((c.p >= lo2) & (c.p < lo)) | ((c.p > hi) & (c.p <= hi2))]
+    c = c.sort_values(["s1_id", "p"], ascending=[True, False], kind="stable")
+    return c[c.groupby("s1_id").cumcount() < top].reset_index(drop=True)
+
+
+def run_extend(a):
+    """Scores pairs just outside the band with the fold models of --src (no retraining) and writes
+    <src band scores> + <new scores> under --tag. Train rows: an S1 in fold k's validation set is scored
+    only by fold model k (never saw it); S1s outside the original band by the fold average, as holdout/test."""
+    with open(os.path.join("experiments", a.src, "llm.json"), encoding="utf-8") as f:
+        cfg = json.load(f)
+    lo, hi, folds = cfg["lo"], cfg["hi"], cfg["folds"]
+    for split, s1set in [("train", "train"), ("train", "holdout"), ("test", "all")]:
+        if f"{split}/{s1set}" not in a.splits.split(","):
+            continue
+        t = time.time()
+        full = pd.read_parquet(p1_path(split, s1set, cfg["stage1"]))
+        band = select_band(full, lo, hi, cfg["top"])
+        ext = extra_band(full, lo, hi, a.lo2, a.hi2, a.top)
+        del full
+        fold = np.full(len(ext), -1)
+        va_sets = []
+        is_oof = s1set == "train"             # train/holdout has no labels: scored like test
+        if is_oof:                   # same GroupKFold call as run_train -> same S1 -> fold map
+            y = band.label.to_numpy(np.float32)
+            for k, (_, va) in enumerate(GroupKFold(n_splits=folds).split(band, y, band.s1_id.to_numpy())):
+                va_sets.append(va)
+                fold[ext.s1_id.isin(set(band.s1_id.iloc[va])).to_numpy()] = k
+        print(f"extend {split}/{s1set}: band {len(band)} + extra {len(ext)} pairs "
+              f"(train rows by fold: {np.bincount(fold + 1).tolist() if is_oof else '-'})")
+        tx = Texts(split)
+        A, B = tx.pairs(ext)
+        logit, n = np.zeros(len(ext)), np.zeros(len(ext))
+        for k in range(folds):
+            tok, model, dev = load_model(os.path.join("models", a.src, f"gpt2_fold{k}"))
+            enc = Encoder(tok, cfg["maxlen"])
+            rows = np.flatnonzero((fold == k) | (fold == -1))
+            logit[rows] += predict(model, dev, enc([A[i] for i in rows], [B[i] for i in rows]),
+                                   tok.pad_token_id, cfg["bs"] * 4, cfg.get("bf16", False))
+            n[rows] += 1
+            if is_oof:                         # check: fold k must reproduce its saved OOF scores
+                old = pd.read_parquet(llm_path("train", "train", a.src))
+                chk = band.iloc[np.random.default_rng(0).choice(va_sets[k], 3000, replace=False)]
+                ref = chk[["s1_id", "cand_id"]].merge(old, how="left").p_llm.to_numpy()
+                q = 1 / (1 + np.exp(-predict(model, dev, enc(*tx.pairs(chk)), tok.pad_token_id, cfg["bs"] * 4,
+                                             cfg.get("bf16", False))))
+                diff = np.abs(q - ref)                 # bf16 + different batch padding -> small noise only
+                p99 = np.quantile(diff, 0.99)
+                print(f"  fold {k} OOF check: mean |diff| {diff.mean():.5f}, p99 {p99:.4f}, max {diff.max():.4f}")
+                if diff.mean() > 0.005 or p99 > 0.02:
+                    raise SystemExit("fold map does not reproduce training folds - stop")
+            del model
+        old = pd.read_parquet(llm_path(split, s1set, a.src))
+        new = pd.DataFrame({"s1_id": ext.s1_id.to_numpy(), "cand_id": ext.cand_id.to_numpy(),
+                            "p_llm": (1 / (1 + np.exp(-logit / n))).astype(np.float32)})
+        out = pd.concat([old, new], ignore_index=True)
+        if out.duplicated(["s1_id", "cand_id"]).any():
+            raise SystemExit("extra pairs overlap the band")
+        out.to_parquet(llm_path(split, s1set, a.tag), index=False)
+        print(f"  saved {len(out)} scores -> {llm_path(split, s1set, a.tag)} ({time.time() - t:.0f}s)")
+    os.makedirs(os.path.join("experiments", a.tag), exist_ok=True)
+    with open(os.path.join("experiments", a.tag, "llm.json"), "w", encoding="utf-8") as f:
+        json.dump({**cfg, "tag": a.tag, "src": a.src, "lo2": a.lo2, "hi2": a.hi2, "top2": a.top}, f, indent=2)
+
+
 def run_predict(a, split, s1set):
     with open(os.path.join("experiments", a.tag, "llm.json"), encoding="utf-8") as f:
         cfg = json.load(f)
@@ -275,7 +343,7 @@ def run_predict(a, split, s1set):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=["count", "train", "holdout", "test"])
+    ap.add_argument("mode", choices=["count", "train", "holdout", "test", "extend"])
     ap.add_argument("--stage1", default="v005ws1")
     ap.add_argument("--tag", default="g001")
     ap.add_argument("--model", default="gpt2", help="HF id or local dir (gpt2, gpt2-medium, ...)")
@@ -291,6 +359,10 @@ def main():
     ap.add_argument("--pos-weight", type=float, default=1.0)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--bf16", action="store_true", help="bfloat16 autocast instead of fp16 + loss scaling")
+    ap.add_argument("--splits", default="train/train,train/holdout,test/all", help="extend mode: which splits")
+    ap.add_argument("--src", default=None, help="extend mode: tag whose fold models score the extra pairs")
+    ap.add_argument("--lo2", type=float, default=0.005, help="extend mode: lower edge of the wider band")
+    ap.add_argument("--hi2", type=float, default=0.995, help="extend mode: upper edge of the wider band")
     ap.add_argument("--retrain", action="store_true", help="ignore saved fold models")
     ap.add_argument("--final-fit", action="store_true", help="stage-1 OOF came from a final-fit run (includes holdout)")
     a = ap.parse_args()
@@ -299,6 +371,8 @@ def main():
         run_count(a)
     elif a.mode == "train":
         run_train(a)
+    elif a.mode == "extend":
+        run_extend(a)
     else:
         run_predict(a, *{"holdout": ("train", "holdout"), "test": ("test", "all")}[a.mode])
     print(f"done in {time.time() - t:.0f}s")

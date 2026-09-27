@@ -14,6 +14,7 @@ Never change more than one major component per version without noting it.
 | v005w | 27 Sep | Wider blocking (k30/sk10/rev5) + name_overlap feature | 0.991 | 0.997 | 0.9773 | 0.993 / 0.952 | 0.969 | — | — |
 | v008 | 27 Sep | GPT-2 cross-encoder score (g001) as stage-2 feature, on v005w/v005ws1 | 0.991 | 0.997 | 0.9835 | 0.996 / 0.962 | 0.986 | 0.9768 | — |
 | v009 | 27 Sep | + XLM-R-base cross-encoder score (x001) next to GPT-2 in stage 2 | 0.991 | 0.997 | 0.9857 | 0.997 / 0.964 | 0.991 | 0.9809 | day3-sub4 |
+| v010a | 27 Sep | x001 scores widened to p1 0.005-0.995 (x001w, no retraining); stage-2 base-feature cache; test with --p1-min 0.001 | 0.991 | 0.997 | 0.9860 | 0.997 / 0.965 | 0.992 | — | — |
 
 Public leaderboard leader (26 Sep): 0.988419.
 
@@ -125,3 +126,14 @@ Public leaderboard leader (26 Sep): 0.988419.
 
 - Submission: public LB 0.980893 (v008 0.9768, +0.0041; holdout +0.0022). Holdout-LB gap 0.0048 (v008 0.0067).
   Final submission package built from v009 (output/ = these files; validator PASS with --check-ids).
+
+## v010 — wide-band XLM-R scores + stage-2 feature cache (after v009; not in the final package)
+- Stage-2 base features cached per split (`stage2.py cache`); reruns cost minutes. Verified identical to v009 features.
+- x001w: XLM-R x001 fold models also score p1 in [0.005, 0.02) and (0.98, 0.995] (`llm_rescore.py extend`,
+  no retraining; train rows scored only by the fold model that did not see the S1; OOF reproduction check
+  mean |diff| 0.0006). Extra pairs: train 381K, holdout 562K, test 2.1M.
+- v010a = stage 2 `--llm g001,x001w`: OOF 0.9855 (v009 0.9852); holdout 0.9860 (v009 0.9857; full stage 2, no --p1-min);
+  precision 0.9971, recall 0.9649; India 0.9853, US 0.9865.
+- Test with `--p1-min 0.001` (stage 2 only on the 10.2% of pairs with p1 >= 0.001; features verified identical,
+  skipped pairs get p2 = 0): validator PASS; outputs in /data/submissions/v010a.
+- Not finished: v010b (--group-llm) and x003 (xlm-roberta-large; stopped in fold 0 epoch 2 to free RAM).
