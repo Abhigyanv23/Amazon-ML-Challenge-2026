@@ -138,3 +138,136 @@ if behind; no network calls at run time).
   stopped (v006-config final fit abandoned); restart only for v012 if pursued.
 - CPU-bound (GPU cannot help): blocking (sparse top-k), feature building (rapidfuzz).
 - GPU can help: LightGBM/CatBoost training (modest), any v012 fine-tuning (large).
+
+---
+
+# Update: external suggestion doc, audited (Day 3, post v005fr)
+
+Source: a teammate/parallel-instance suggestion doc that correctly reads our actual `matcher.py`
+(cites the `decide()` line), so its diagnoses are taken seriously — but three claims in it were
+wrong and are corrected below rather than copied as-is.
+
+## Corrections to the source doc
+
+1. **"Submit v005fr now" is stale.** Already done. Result: **public LB 0.9640** — worse than pure
+   v005 (0.9683), not the ~0.969 the doc predicted. v005fr is not a candidate for final submission.
+2. **The proposed pruner fix is backwards.** "Keep (S1, C) only if C ∈ S1's top-K **and** S1 ∈ C's
+   top-K" is an intersection — it can only remove more pairs, and does nothing for a pair that
+   already failed the first clause, which is exactly the described failure. The real fix (below,
+   v015) is a **union**: also keep C for S1 if S1 ranks well among the S1s competing *for C*
+   specifically (mirroring the existing reverse blocking channel, applied to pruning instead of
+   candidate generation).
+3. **"Confirm via France-labeled holdout" (priority 7) is impossible** — France has zero labels
+   anywhere in train. Validation path is: no India/US holdout regression → unsupervised French
+   diagnostics (`diagnose_country.py`/`diagnose_france.py`) → an actual leaderboard submission.
+
+## Already implemented (source doc lists these as new features to build)
+
+- `name_distinguishing_token` (IDF-weighted unmatched-token count) = our existing
+  `unmatched_idf_a`/`unmatched_idf_b`, in features v5 since v006.
+- `zip_conflict` = our existing `zip_eq` (same information, inverted framing).
+- The doc's own priority 5 ("distinguishing-token feature for the address-collision FP pattern")
+  is therefore already addressed on the feature side; what's left is data-selection (see v014
+  below), not a new feature.
+
+## Root-cause diagnosis for the v006 regression (adopted, corrected)
+
+Per-S1 independent top-K pruning can drop a candidate from its **true owner's** list (crowded S1 —
+more competing candidates — candidate ranks just below the cap) while a **false claimant** with a
+sparser candidate list keeps it. `decide()`'s global `drop_duplicates('cand_id')` then never
+compares the true pair at all — it was never a candidate for its true S1. This fits the measured
+pattern better than the earlier "pruner trained on India/US hurts France" theory: the hybrids
+showed v006's France rows were fine (slightly better than v005's); the loss was specifically on
+India/US, which have more candidates per S1 on average and so are pruned more aggressively.
+
+## New version plan items
+
+### v006np — isolate model gain from pruning damage (do this first; cheapest, highest-value)
+Run v006's features v5, stage-1 (LightGBM, optionally the CatBoost blend) and stage-2 fallback
+search **on v005's full unpruned candidate set** (`--cand-tag v005`, skip `prune.py` entirely).
+Decode with the existing unchanged global uniqueness rule in `matcher.py`. If this recovers or
+beats v005's holdout/LB, it confirms pruning (not the v005→v006 feature/model changes) caused the
+regression, and isolates exactly how much the features alone are worth.
+- Cost: reuses v005's existing test blocking output; no new blocking/pruning code.
+- Success check: holdout ≥ v005's 0.9773; only a leaderboard submission confirms the India/US test
+  recovery, since this is precisely the dynamic holdout has been shown not to fully capture.
+
+### v015 — pruner v2, two-sided (union) keep rule (build only if v006np's LB confirms the diagnosis)
+For each candidate C, also compute its own top-K best S1 (reverse direction — the pruner equivalent
+of the existing reverse blocking channel). Keep pair (S1, C) if **either** C ∈ S1's forward top-K
+**or** S1 ∈ C's reverse top-K. This preserves the candidate-set reduction for the common case while
+specifically rescuing a true pair that a crowded S1 would otherwise drop, because from the
+candidate's side there are usually few real competing S1s (ground truth: each C belongs to ≤ 1
+true S1), so the true S1 is very likely to be at or near C's own top rank even when C isn't near
+the top of S1's crowded list.
+- Threshold/cap chosen on OOF, same discipline as the current pruner.
+- Expected: most of v006's feature-level holdout gain (0.9778) recovered on the leaderboard, at a
+  candidate-set size between v005's 37/S1 and v006's 10.4/S1 — the union rule can only add pairs
+  back relative to pure per-S1 top-K, so exact size depends on how many true pairs were being lost
+  this way; report it, don't assume it in advance.
+
+### v014 — scoped hard-negative oversampling (small, additive to v006np or v015)
+Pull training pairs where blocking score is high (shared house number/address) but the label is
+negative — the "Manya Traders vs Manya Rifle" pattern — and oversample them in the training sample
+construction (not new blocking/pruning infrastructure). Combine with a plain binary
+`house_number_conflict` flag in `features.py` (both sides have a house number and it differs) as a
+cheap complement to the existing continuous `hn_edit`/`hn_logdiff`/`hn_comp_eq` features — low
+individual value, cheap to add alongside the oversampling change.
+
+### v016 — French legal-form/noise-word gaps (from firmmatchr, corrected validation path)
+Add to `LEGAL_ANY`/`LEGAL_TAIL` in `normalization.py`: `sca`, `scs`, `scop`, `scic`, `sem`,
+`societe`/`ste`, `association`, `fondation`, `cooperative`, `groupe`, `entreprise`. Add to a
+name-noise-word list (parallel to the existing `LEAD_DROP`): `et`, `succursale`, `filiale`, `la`,
+`le`, `les`, `du`, `des`, `de`, `aux`, `au`. Validation: (1) rerun the normalization `--eval` and
+confirm no regression on the India/US true-pair/random-pair metrics; (2) rerun `--split test` and
+check the French-specific unsupervised diagnostics (`diagnose_country.py`) for a plausible shift
+(more names getting a `name_legal` token, no drop in candidate recall proxies); (3) the only real
+confirmation is a leaderboard submission, since France has no labels to hold out.
+
+### Blank-address recall (priority 4 in the source doc) — diagnose before building
+The 0.0116-loss blank-address bucket could be a **blocking** problem (candidate never generated) or
+a **decision** problem (candidate present, classifier under-confident with only name evidence) —
+these need different fixes (a new blocking channel vs. a threshold/feature change) and the source
+doc assumed the former without checking. **Before building anything**, read the
+`[cand_blank_addr]` slice already computed in `experiments/v005/error_analysis.txt` (or rerun
+`error_analysis.py`), which reports `recall_in_cands` for this segment specifically — if that
+number is already high, the candidates exist and the fix is threshold/feature-side (push `t_blank`
+further, or a name-only feature emphasis for this segment); if it's low, the fix is a genuine new
+blocking channel as the source doc proposed.
+
+### v013 — cost-sensitive weight search (kept from earlier review of Parambath et al., NeurIPS 2014)
+Not the same as a from-scratch custom asymmetric loss (correctly skipped by the source doc — high
+engineering risk for LightGBM/CatBoost). A cheap `scale_pos_weight`/per-row-weight grid search
+(e.g. 0.5/0.7/1.0/1.4/2.0), reusing cached features (`--reuse-features`), each variant still going
+through the existing full threshold/`t_top`/`t_blank`/fallback search on OOF. Parambath et al.
+found cost-sensitive-and-thresholded beats thresholding-alone empirically; this tests whether that
+gap exists for us. Low priority relative to v006np/v015 above, but cheap enough to run in parallel
+if a machine is free.
+
+## Skipped, confirmed correct by the source doc (no change)
+- BERT cross-encoder / embedding-based semantic matching — parked, correctly deprioritized further
+  given remaining time.
+- Optuna/Bayesian threshold search — the 0.05→0.01 grid already measured at +0.000 to +0.001; no
+  room for a smarter search to find more there.
+- Rotom (data augmentation), DIAL (active learning) — not applicable, we aren't label-constrained.
+
+## Papers referenced in the source doc: review status
+Already read and verdicted earlier in this conversation: the NIPS 2014 F-measure paper, the
+surrogate Fβ loss paper, the ERO/DMO paper (2507.15240), Rotom, DIAL, Binette & Steorts, the
+blocking/filtering survey (1905.06167), the one-to-one/bipartite matching algorithms paper
+(same research cluster as the cited Kirielle & Christen 2112.14030, not independently re-read),
+the legal-form classification paper, GraLMatch, AnyMatch. See earlier verdicts; not repeated here.
+**Not yet read**, cited by the source doc, left for optional follow-up only if hours remain:
+Gemmell/Rubinstein/Chandra (1108.6016), TransClean (2506.04006), DeepBlocker, Ditto, Sudowoodo,
+Peeters & Bizer (LLM-EM), the four address-matching papers.
+
+## Blocking scalability note (for the methodology write-up — accurate as stated, kept)
+Per-(country, state) partitioning avoids cross-country comparison; `sparse_dot_topn` computes only
+top-k per row without materializing the full similarity matrix (holdout: 974s for the full run,
+~37 candidates/S1 average). The one real scale gap: nothing caps the size of a single
+(country, state) partition, and the reverse channel's max observed degree (**6,243** candidates
+for one S1, matching our own recorded `max_candidates_per_s1` in `EXPERIMENTS.md`) shows block skew
+under chain-name conditions. Fixes if asked how this reaches billion-record scale: sub-partition
+oversized blocks by a secondary key; cap degree symmetrically at generation time (this is the same
+principle as v015 above, applied one stage earlier); LSH/MinHash for partitions too large to
+multiply exactly.
