@@ -1,0 +1,25 @@
+{
+  "n_scored": 441364,
+  "missing_rows_treated_empty": 25734,
+  "F0.5_macro": 0.9769483795735406,
+  "micro_precision": 0.9928267433127353,
+  "micro_recall": 0.9504019727373564,
+  "singleton_accuracy": 0.9684774230191894,
+  "false_empty_rate_nonsingletons": 0.004468281679325199,
+  "avg_pred_per_s1": 3.3123634913586066,
+  "F0.5_by_true_count": {
+    "0": 0.9685,
+    "1": 0.9358,
+    "2": 0.9721,
+    "3+": 0.9818
+  },
+  "F0.5_by_country": {
+    "india": 0.9708,
+    "us": 0.9811
+  },
+  "candidate_recall": 0.9881392178457823,
+  "avg_candidates_per_s1": 37.425324675324674,
+  "max_candidates_per_s1": 6243,
+  "oracle_F0.5_ceiling": 0.9961876425912486,
+  "pred_ids_not_in_candidates": 0
+}
