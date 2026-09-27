@@ -1,141 +1,140 @@
 # Roadmap — Amazon ML Challenge 2026 (Business Entity Resolution)
 
-Last updated: 26 Sep 2026 (Day 2). Estimated gains are engineering estimates, not measurements;
-every version is verified on the frozen holdout before submission.
+Last updated: 27 Sep 2026 (Day 3). Estimated gains are engineering estimates, not measurements;
+every version is verified on the frozen holdout before submission, but from v006 onward the
+holdout no longer reliably predicts leaderboard direction (see "Known limitation" below) — treat
+holdout as necessary, not sufficient.
 
 ## Current position
 
 | Item | Value |
 |---|---|
-| Best submitted | v002 — public LB 0.9436 (holdout 0.9545) |
-| Best evaluated | v003 — holdout 0.9580 (not submitted; held to combine with v004) |
-| Leader (public LB) | 0.9859 |
-| Submissions used / left | 2 / 10 (assuming unused Day 1 slots do not carry over) |
+| **Best submitted (use this as the fallback final)** | **v005 — public LB 0.9683 (holdout 0.9773)** |
+| Leader (public LB, 26 Sep) | 0.988419 |
+| Submissions used | 6 (day1-sub1/2, day2-sub1/2/3/4) + v005fr (this update) |
 
-### Where the remaining loss is (v003 holdout, 1 − F0.5 = 0.0420)
+### Submission history (public leaderboard)
+
+| Tag | Version | Public LB | Candidates/S1 (test) |
+|---|---|---|---|
+| day1-sub1 | v001 | 0.9310 | 20.0 |
+| day1-sub2 | v002 | 0.9436 | 25.6 |
+| day2-sub1 | v004 | 0.9550 | 25.6 |
+| **day2-sub2** | **v005** | **0.9683 (best)** | 36.7 (max 6,243) |
+| day2-sub3 | v006 | 0.9652 | 11.0 (max 20) |
+| day2-sub4 | v006fr (India/US v006, France v005) | 0.9642 | mixed |
+| (unlogged) | v005fr (India/US v005, France v006) | **0.9640** | mixed |
+
+### Open question: the four hybrid scores are inconsistent with a simple weighted-average model
+
+Treating LB ≈ w·S(India/US rows) + (1−w)·S(France rows) for some fixed w, the four submissions
+(v005, v006, v006fr, v005fr) over-determine the four unknowns and **do not solve consistently**:
+comparing (v005 − v006fr) implies France-v005 beats France-v006 by ~0.029; comparing
+(v006 − v005fr) implies the opposite (France-v006 better by ~0.007) — a sign flip, not just a
+different magnitude. Likely causes, in order of suspicion given our history of copy/build
+mistakes on this exact step (Section "known incidents" below): (a) the public leaderboard scores
+only a **subset** of test, so the four submissions may not share an identical France/India/US
+row sample; (b) a build error in `v005fr` (verify with
+`check_submission.py --out-dir experiments/v005fr/submission` against the expected combine-table
+counts — France ≈36.7 cands/S1 from v005, India/US ≈11.0 cands/S1 from v006 — before trusting
+0.9640 as a real measurement); (c) genuine per-submission noise from the LB being a subset.
+**Action before drawing any France conclusion from these four numbers: re-verify the v005fr
+submission folder counts.** Until resolved, do not use v006's France rows over v005's — v005 pure
+remains the best confirmed result and needs no hybrid.
+
+### Where the remaining loss is (v005 holdout, 1 − F0.5 = 0.0227)
 
 | Source of loss | Size | Meaning |
 |---|---|---|
-| Matcher / decision | ≈ 0.031 | Ceiling 0.9886 − 0.9580: candidates wrongly rejected or accepted |
-| Blocking | ≈ 0.011 | True matches never reach the model (49,259 pairs; India recall 0.948 vs US 0.981) |
-| France (LB only) | ≈ 0.006 on LB | Implied France F0.5 ≈ 0.91 at v002; 15% of test, no labels |
-| Known regression | — | v003 lowered F0.5 for 1-match S1 (0.878 → 0.857): no other candidates to give support |
+| Blocking | ≈ 0.004 | Ceiling 0.996 vs unpruned candidate recall 98.8%; small and well-characterized |
+| Matcher / decision | ≈ 0.019 | Blank-address recall only ~51%; false positives on same-address/chain names |
+| France (LB only) | ≈ 0.007–0.03 | See open question above — magnitude currently unclear |
 
-## Version plan
+## Version plan — status
 
-| Version | What | Targets | Est. gain | Status / when |
-|---|---|---|---|---|
-| v001 | Baseline: normalization, word blocking, LightGBM | — | — | Done (LB 0.9310) |
-| v002 | Normalization v2, 3-channel blocking, features v2 | Blocking, France | — | Done (LB 0.9436) |
-| v003 | Stage-2 group-consistency rescoring | Matcher recall | — | Done (holdout 0.9580) |
-| **v004** | Error analysis → decision fixes + new pair features | Matcher loss, 1-match regression | +0.004 to +0.012 | Day 2 morning |
-| **v005** | Blocking v3: candidate expansion + fixes from v002 misses | Blocking ceiling, India | +0.003 to +0.008 | Day 2 |
-| **v006** | Non-Latin names: learned transliteration or multilingual embeddings | India recall/precision | +0.002 to +0.006 | Day 2 (if time) |
-| **v007** | Model capacity + hard-negative mining | General matcher loss | +0.002 to +0.005 | Day 2 night |
-| **v008** | Polish track: small verified gains | Everything, a little | +0.002 to +0.008 combined | Day 2 night / Day 3 morning |
-| **Final** | Best version; clean run; reproducibility; docs; zip | Package | — | Day 3 |
+| Version | What | Result | Status |
+|---|---|---|---|
+| v001–v004 | Baseline through stage-2 fallback + features v3 | LB 0.9310 → 0.9550 | Done |
+| **v005** | Blocking v3 (skeleton/address/reverse channels) + features v4 | **holdout 0.9773, LB 0.9683** | **Done — current best** |
+| v006 | Supervised meta-blocking pruner + features v5 + CatBoost blend + t_blank | holdout 0.9778, **LB 0.9652 (worse)** | Done — not used |
+| v006fr / v005fr | Per-country hybrids of v005/v006 | LB 0.9642 / 0.9640 (both worse than v005) | Done — not used; see open question above |
+| v007 (laptop B) | v006 configuration, final fit 800K S1 | Stopped: inherits v006's regression | Abandoned |
+| v008 (SageMaker) | v006 configuration, full final fit | Stopped: same reason | Abandoned |
+| Large-k blocking experiment | k=30/k_sk=10/k_rev=5, 68 cands/S1 | Ceiling +0.0009 for 6x v006's candidate count; test run OOM'd | Abandoned |
+| **v010** | v005 code (tag `day2-sub2`) final-fit on 600K+ S1 incl. holdout, **unpruned** | Not yet run | **Candidate for final submission if time allows** |
+| **v011** | Group-coherence post-filter (GraLMatch-inspired, Section below) | Not yet built | **Candidate for final submission if time allows** |
+| v012 (parked) | Fine-tuned small LM (AnyMatch-style, GPT-2/124M) trained on India/US labels, applied zero-shot to France | Not started | Stretch only if v010/v011 land early and time remains |
 
-### v004 — Error analysis → targeted fixes + new features
-Error analysis (holdout; labels used for analysis only):
-- Classify errors: blocking miss, matcher false negative, false positive, singleton failure —
-  by country, true match count, non-Latin flag, blank address, candidate rank.
-- **Stage 1 → Stage 2 decomposition:** true positives recovered, false positives introduced,
-  false negatives removed / newly introduced, by the same slices. Explains the 1-match regression.
-- **Bootstrap confidence interval** of holdout F0.5 (resampling S1 entities) — confirms version
-  differences are beyond noise without extra retraining.
-- **Uniqueness A/B** on saved probabilities: (A) no one-S1-per-candidate rule, (B) current rule,
-  (C) rule only when the winning p is high. Ground truth shows 0 S2/S3 records matched to >1 S1,
-  so (B) is expected to hold; measured for documentation.
+### v010 — final fit on more data (same v005 code, no pruning)
+- Rationale: v005 is trained on only 300K of 1.77M available train-fold S1. More data, same exact
+  configuration that is proven on the leaderboard, is the lowest-risk remaining lever.
+- Run at git tag `day2-sub2` (the exact code that produced v005), with `--final-fit` on 600K–800K
+  S1 including the holdout (no holdout scoring possible for this run — judge by OOF only).
+  **Do not add the v006 pruner, feature v5, or CatBoost/t_blank/fallback-search changes** — those
+  are exactly what regressed on test in v006; keep the proven v005 configuration unchanged and
+  only add data.
+- Test candidates: reuse v005's saved unpruned test blocking output directly (`cand_test_all_v005`).
+- Expected gain: +0.001 to +0.003 over v005, unconfirmed until submitted.
 
-Fixes chosen by the largest error bucket, likely:
-- 1-match regression: pass Stage-1 probability through when Stage 2 has no support
-  (k_size = 0), or a separate threshold for S1s with a single confident candidate.
-- Relative threshold: keep a candidate if p ≥ t and p ≥ r × (S1's best p).
+### v011 — group-coherence post-filter (new idea, from GraLMatch, PVLDB-adjacent 2024)
+- For every S1 with 2+ predicted matches, compute pairwise name/address similarity **between the
+  assigned candidates themselves** (not just each candidate vs. S1). A true business's several
+  duplicate records should resemble each other; a false positive sharing only S1's address/name
+  typically looks unlike the *other* accepted candidates.
+- Implementation: a group-coherence feature (min/mean candidate-candidate similarity within the
+  predicted group) added to stage 2, or a post-hoc filter dropping a candidate whose similarity to
+  the rest of its assigned group is far below the group's internal average. Threshold tuned on
+  out-of-fold data only.
+- Targets the largest remaining precision-loss bucket (false positives on shared-address/chain
+  names) with a mechanism not yet tried. Expected +0.001 to +0.004, concentrated on multi-match S1
+  precision. Build on top of whichever base (v005 or v010) is currently best.
 
-New pair features (stage 1):
-- **Token alignment:** share of S1 name tokens matched, share of candidate tokens matched,
-  IDF-weighted count of rare matched tokens, unmatched-token count.
-- **Pair-level character n-gram cosine** (2- and 3-grams) for name and address on every pair
-  (today only the trigram channel's top 10 carry a trigram score).
-- **Address component agreement:** house number, street name, city compared separately
-  (instead of one fuzzy address score).
+### v012 — parked stretch (AnyMatch-style zero-shot for France)
+- Fine-tune GPT-2 (124M params, MIT-licensed, well under the 8B cap) as a match/no-match sequence
+  classifier on our own labelled India/US pairs (Ditto-style serialization); apply zero-shot to
+  French candidate pairs, especially the stage-1 uncertain band (p in 0.3–0.8).
+- Only pursue if v010/v011 land early and a GPU is free; needs a training pipeline and inference
+  over millions of pairs that we have not built. No external data — labels are entirely our own.
 
-### v005 — Blocking v3
-- Input: `experiments/v002/blocking_misses.txt` (category counts for the 49,259 remaining misses).
-- **Candidate expansion via S2/S3 duplicate clustering:** for each confidently matched candidate,
-  add its near-duplicates in the pool (same address + numbers; similar or non-Latin name), then
-  rescore. The expanded set is written to `candidate_pairs.tsv` (rule: matches ⊆ candidates).
-- Small **relaxed-state channel** (same country, outside the S1's state block, top 5) — only
-  ~1.2K state-block misses remain, so low priority.
-- Tune per-channel k (word / trigram / non-Latin) against recall and candidate count.
-
-### v006 — Non-Latin names (pick one after a quick test)
-- Option A: learn a Devanagari/Tamil → Latin character mapping from training pairs (train-fold labels only).
-- Option B: multilingual sentence embeddings only for non-Latin records and their candidates
-  (~1M names); runs on the laptop GPU. Verify licence (MIT/Apache 2.0) and size (≤ 8B) on the model card.
-- Note: the non-Latin names are genuine Devanagari/Tamil text, not encoding corruption
-  (the garbled characters seen earlier came from PowerShell output encoding only).
-
-### v007 — Model capacity + hard-negative mining
-- Train on 600K+ train-fold S1 instead of 300K (watch 16 GB RAM).
-- **Hard-negative mining:** after a first model, add back S1 groups containing high-scoring
-  negatives (same common name + different address, same address + different business,
-  high blocking score + negative label) and hard positives; retrain.
-- Lower learning rate, more rounds.
-
-### v008 — Polish track (every measured gain counts)
-
-| Item | Cost | Expected |
-|---|---|---|
-| Finer threshold grid (0.05 then 0.01) | minutes | +0.000 to +0.001 — **done in `matcher.tune()`; applies from the next retrain** (v003 used the coarse grid) |
-| 5-fold instead of 3-fold OOF | +10–15 min training | +0.000 to +0.001 |
-| Phonetic token in the word blocking channel | 1 h blocking re-run | +0.000 to +0.002 |
-| Lower learning rate (0.03) + more rounds | ~3× training time | +0.001 to +0.003 |
-| CatBoost (Apache 2.0) blended with LightGBM on the same folds | ~1 h | +0.001 to +0.003 |
-| LightGBM on GPU (`device_type="gpu"`, `max_bin=63`) | setup test | speed only; compare OOF vs CPU |
-
-### Stretch (parked)
-- **Transformer cascade (Ditto-style)** on uncertain pairs only (stage-2 p ≈ 0.2–0.9), with a
-  multilingual checkpoint via Hugging Face `transformers`. Parked: v004/v005 have higher expected
-  gain per hour. If revived: check SageMaker GPU quotas first; prototype locally on a sample.
-
-### Reviewed and not adopted (reason)
-- Blocking on country + first 4 name characters — breaks on reordering, typos, non-Latin; trigram channel covers typos.
-- Postcode-prefix blocking — postcodes present in ~1% of records.
-- Source-specific thresholds (S2 vs S3) — each pair already must pass `t`; `is_s3` is a feature.
-- Suffix/street regex, numeric column, corpus TF-IDF cosine, numeric-mismatch flag — already implemented.
-- Multi-pass / character n-gram blocking, relaxed state partition — already implemented in v002.
-- Repairing "mojibake" names — not present in the data (display artifact).
-- Multiple independent validation splits — replaced by a bootstrap CI on the 441K-entity holdout;
-  holdout ≈ OOF in every version, so no evidence of overfitting.
-- Splink — unsupervised Fellegi-Sunter; we have 7.6M labelled pairs, so supervised LightGBM is stronger; integration = rewrite.
-- DeepMatcher — older and weaker than Ditto.
+## Reviewed and not adopted (reason) — additions since last update
+- **EXC-style reciprocal/mutual-best-choice decision rule** (from Papadakis et al., VLDB J. 2023,
+  one-to-one matching algorithms survey) — does not transfer: that paper's setting is strict
+  one-to-one on both sides, while ours is many-to-one (one S1 can have several true matches). A
+  mutual-best-choice requirement would wrongly reject an S1's legitimate 2nd/3rd match.
+- **Optimal (Hungarian-style) bipartite assignment for the decision step** — same survey found the
+  empirically best-performing rule (UMC: highest-score-wins, unique per S2/S3 record) is exactly
+  what we already do, and that the "principled" optimal-assignment approximation (BAH) performs
+  *worse* in practice. Treated as validation that the decision layer is not the remaining
+  bottleneck; no further engineering effort planned there.
 
 ## France (unlabeled, 15% of test)
-- Keep features language-agnostic (no country feature).
-- For every version compare France prediction statistics (avg matches, empty rate) with India/US.
-- Public-LB movement is the only direct France signal.
+- Keep features language-agnostic (no country feature) — unchanged.
+- Confidence-profile diagnostic (stage-1 p) showed the model is not more uncertain on France than
+  India/US at any version checked; any remaining France gap is confident errors, not a coverage gap.
+- Country-hybrid submissions (this update) were meant to isolate France's contribution cleanly but
+  produced an internally inconsistent result (see "Open question" above) — resolve this before
+  acting on it further, rather than trusting either hybrid's implied France score.
 
 ## Submission budget
 
-| Day | Left | Plan |
-|---|---|---|
-| Day 1 (25 Sep) | 3 | Not used (assumed not to carry over) |
-| Day 2 (26 Sep) | 5 | v004 (includes v003) if holdout > 0.9580 + 0.002; then v005–v007 winners |
-| Day 3 (27 Sep) | 5 | Final + 1–2 safety submissions; finish by afternoon, well before 11:59 PM IST |
+| Day | Status |
+|---|---|
+| Day 1 (25 Sep) | 2 used (v001, v002) |
+| Day 2 (26 Sep) | 4 used (v004, v005, v006, v006fr) + v005fr this update |
+| Day 3 (27 Sep) | Remaining slots: v010 and/or v011 if ready; final upload must be the best-scoring version, submitted last, well before 11:59 PM IST |
 
-## Working rules
-1. Holdout first, test second: run test blocking + prediction (~1 h) only for holdout winners.
-2. One major change per version, logged in `experiments/EXPERIMENTS.md`.
-3. Holdout labels never used for training or tuning; stage 2 trains on out-of-fold probabilities.
-4. Before every submission: `check_submission.py` + official validator with `--check-ids`,
-   copy to `experiments/<tag>/submission/`, git tag `dayN-subM`, record LB score.
-   Evaluated-but-not-submitted versions get tags like `v003-holdout-0.9580`.
-5. Parallel work across teammates: v004 and v005 can be built on v003 outputs simultaneously.
-6. If behind schedule, drop v006/v007/v008 items before cutting final packaging time.
-7. No network calls in the pipeline at run time (model/library downloads are one-time setup only).
+## Working rules (unchanged) + one addition
+1–7. Unchanged from Day 2 (holdout-first where holdout is informative; one change per version;
+no holdout leakage; validators before every submission; parallel work; drop lower-priority items
+if behind; no network calls at run time).
+8. **New:** after building any per-country or per-version hybrid/combined submission, re-run
+   `check_submission.py --out-dir <saved folder>` and compare its printed counts against the
+   combine script's own table **before** treating the resulting leaderboard score as a clean
+   measurement — this exact class of copy/build error has happened twice already (v006fr's first
+   attempt, and possibly v005fr per the open question above).
 
-## Compute notes
-- Laptop: 12 CPU cores, 16 GB RAM, NVIDIA RTX 3050 Laptop (4 GB). Stay local; SageMaker free tier is weaker.
+## Compute notes (unchanged)
+- Laptop A: 12 CPU cores, 16 GB RAM. Laptop B: available for v010/v011 in parallel. SageMaker:
+  stopped (v006-config final fit abandoned); restart only for v012 if pursued.
 - CPU-bound (GPU cannot help): blocking (sparse top-k), feature building (rapidfuzz).
-- GPU can help: LightGBM training (modest), embeddings / transformer options (large).
+- GPU can help: LightGBM/CatBoost training (modest), any v012 fine-tuning (large).
