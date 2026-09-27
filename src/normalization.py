@@ -115,12 +115,19 @@ NAME_ABBR = {"pvt": "private", "pte": "private", "ltd": "limited", "ltda": "limi
              "centre": "center", "mgmt": "management", "natl": "national", "univ": "university",
              "hosp": "hospital", "grp": "group", "cie": "compagnie", "ets": "etablissements"}
 LEGAL_ANY = {"private", "limited", "llp", "llc", "incorporated", "corporation", "pllc", "plc", "lp",
-             "sarl", "sas", "sasu", "eurl", "sci", "snc", "selarl", "gmbh"}
+             "sarl", "sas", "sasu", "eurl", "sci", "snc", "selarl", "gmbh",
+             "sca", "scs", "scop", "scic", "sem", "societe", "ste", "association", "fondation",
+             "cooperative", "groupe", "entreprise"}
 LEGAL_TAIL = {"company", "pc", "pa", "sa", "public"}          # only stripped at the end
 TAIL_JUNK = {"and", "of", "the"}
-LEAD_DROP = {"the"}
+# v7 (firmmatchr cross-check): French noise words - articles/connectors with no discriminating value
+_NOISE_WORDS = {"et", "succursale", "filiale", "la", "le", "les", "du", "des", "de", "aux", "au"}
+LEAD_DROP = {"the"}          # English leading article only; _NOISE_WORDS strip from anywhere, below
 _LEGAL_WORDS = ["private", "limited", "pvt", "ltd", "llp", "llc", "incorporated", "inc", "corporation",
-                "corp", "company", "co", "public", "sarl", "sas", "sasu", "eurl", "gmbh", "plc", "pllc"]
+                "corp", "company", "co", "public", "sarl", "sas", "sasu", "eurl", "gmbh", "plc", "pllc",
+                # v7 (firmmatchr cross-check): French legal forms not previously covered
+                "sca", "scs", "scop", "scic", "sem", "societe", "ste", "association", "fondation",
+                "cooperative", "groupe", "entreprise"]
 
 _DOMAIN = re.compile(r"\b(?:www\.)?([a-z0-9][a-z0-9\-]*)\.(?:co\.in|com|net|org|biz|info|in|fr|us|io)\b")
 _HASHNUM = re.compile(r"#\s*\d+")
@@ -145,7 +152,7 @@ def normalize_name(raw):
     norm = " ".join(toks)
 
     legal = {t for t in toks if t in LEGAL_ANY}
-    core = [t for t in toks if t not in LEGAL_ANY]
+    core = [t for t in toks if t not in LEGAL_ANY and t not in _NOISE_WORDS]
     while core and (core[-1] in LEGAL_TAIL or core[-1] in TAIL_JUNK):
         t = core.pop()
         if t in LEGAL_TAIL:

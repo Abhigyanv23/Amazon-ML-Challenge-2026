@@ -44,7 +44,8 @@ except ImportError:
 COLS = ["entity_id", "country_key", "addr_state", "name_core", "name_nospace", "name_nonlatin",
         "addr_norm", "addr_nums", "name_skel", "addr_hn"]
 CHANNELS = [("score", "rank", "k"), ("blk_tri", "blk_tri_rank", "k_tri"), ("blk_nl", "blk_nl_rank", "k_nl"),
-            ("blk_sk", "blk_sk_rank", "k_sk"), ("blk_ad", "blk_ad_rank", "k_ad"), ("blk_rev", "blk_rev_rank", "k_rev")]
+            ("blk_sk", "blk_sk_rank", "k_sk"), ("blk_ad", "blk_ad_rank", "k_ad"), ("blk_rev", "blk_rev_rank", "k_rev"),
+            ("blk_ph", "blk_ph_rank", "k_ph")]
 BLOCK_MERGE = {"india": {"tg": "ap", "la": "jk"}}
 
 
@@ -173,6 +174,13 @@ def block_candidates(s_all, is_target, p_blk, a, w):
     out["blk_nl"] = _channel(s_tgt, p_nl, make_addr_docs, a.k_nl, 1.0, a.threads, "blk_nl")     # no token cap
     out["blk_sk"] = _channel(s_tgt, p_nl, make_skel_docs, a.k_sk, 1.0, a.threads, "blk_sk")
     out["blk_ad"] = _channel(s_tgt, p_blk, make_addr_docs, a.k_ad, a.max_df, a.threads, "blk_ad")
+    # blk_ph: same consonant-skeleton machinery as blk_sk, but against the LATIN pool (blk_sk only
+    # covers non-Latin), so Latin-vs-Latin phonetic misspellings ("Phillips" vs "Filips") get blocked
+    # too - this is the Oracle Customer Screening Matching Guide's "Metaphone" channel idea, reusing
+    # our existing skeleton function (which already maps phonetically-equivalent Latin spellings to
+    # the same code) instead of a new dependency.
+    p_lat = p_blk[p_blk.name_nonlatin == 0]
+    out["blk_ph"] = _channel(s_tgt, p_lat, make_skel_docs, a.k_ph, a.max_df, a.threads, "blk_ph")
     return out
 
 
@@ -265,6 +273,7 @@ def main():
     ap.add_argument("--k-sk", type=int, default=5)
     ap.add_argument("--k-ad", type=int, default=5)
     ap.add_argument("--k-rev", type=int, default=2)
+    ap.add_argument("--k-ph", type=int, default=5)   # Latin phonetic channel (Oracle Metaphone-guide idea)
     ap.add_argument("--max-df", type=float, default=0.02)
     ap.add_argument("--w-name", type=float, default=1.0)
     ap.add_argument("--w-addr", type=float, default=1.0)

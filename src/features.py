@@ -1,7 +1,20 @@
 """
-src/features.py
-Updated for v006: Added Overlap Coefficient (name_overlap) to handle acronyms
-and subset entity names without penalizing length differences.
+src/features.py  (v7: + hn_conflict — hard binary flag: both sides have a house number and it
+ differs, independent of edit distance; a clean split for the tree, complementing the continuous
+ hn_edit/hn_logdiff features)
+(v6: + name_overlap, the min-based overlap coefficient (from v005w) — high for
+ acronym/subset name pairs, e.g. one name's tokens are a strict subset of the other's, without
+ penalizing the length difference the way Jaccard does)
+(v5: + unmatched_idf_a/b (IDF mass of name tokens NOT shared), hn_eq_word_jac
+ (address-word overlap when house numbers are equal: same number + different street = distinct business))
+(v4: + skel_cos3 cross-script name skeleton cosine, hn_comp_eq composite house number)
+(v3)
+v2: + zip_eq, b_state_inferred, n_name_close; passes through all blk_* columns
+v3: + IDF-weighted name token alignment, name specificity (name counts across S1/pool),
+      house-number edit/numeric distance, address word overlap without numbers,
+      character 2/3-gram cosine for name and address. IDF computed from the split's own pool (no labels).
+Pair features for (S1, candidate). Inputs: normalized caches + candidate table
+(s1_id, cand_id, blk_*). No labels are used. No country feature (France is unseen in train).
 """
 import math
 from collections import Counter
@@ -24,10 +37,16 @@ PAIR_FEATS = [
     "addr_ratio", "addr_tset", "addr_jac", "addr_len_ratio",
     "num_jac", "num_first_eq", "num_a_in_b",
     "state_eq", "zip_eq",
+    # v3
     "idf_match_a", "idf_match_b", "idf_matched_sum", "idf_b_total", "unmatched_a", "unmatched_b",
     "hn_edit", "hn_logdiff", "hn_len_eq", "addr_word_jac",
     "name_cos2", "name_cos3", "addr_cos3",
+    # v4
     "skel_cos3", "hn_comp_eq",
+    # v5
+    "unmatched_idf_a", "unmatched_idf_b", "hn_eq_word_jac",
+    # v7
+    "hn_conflict",
 ]
 MAX_IDF = 16.0
 
@@ -36,9 +55,12 @@ def _jac(a, b):
     u = a | b
     return len(a & b) / len(u) if u else 0.0
 
+
 def _overlap_coef(a, b):
-    if not a or not b: return 0.0
+    if not a or not b:
+        return 0.0
     return len(a & b) / min(len(a), len(b))
+
 
 def _ngrams(s, n):
     s = "#" + s + "#"
@@ -80,6 +102,7 @@ def _pair_feats(a, b):
     f.append(-1.0 if not (ast and bst) else float(ast == bst))
     f.append(-1.0 if not (az and bz) else float(bool(set(az.split()) & set(bz.split()))))
 
+    # v3: IDF-weighted name alignment
     wa = dict(zip(at, aidf))
     wb = dict(zip(bt, bidf))
     common = set(wa) & set(wb)
@@ -87,25 +110,31 @@ def _pair_feats(a, b):
     ms = sum(wa[x] for x in common)
     f += [ms / ta if ta else 0.0, ms / tb if tb else 0.0, ms, tb,
           float(len(set(wa) - common)), float(len(set(wb) - common))]
-
+    # v3: house number (first extracted number)
     if na and nb:
         ha, hb = na[0], nb[0]
         f += [float(Levenshtein.distance(ha, hb)),
               math.log1p(abs(int(ha[:9]) - int(hb[:9]))), float(len(ha) == len(hb))]
     else:
         f += [-1.0, -1.0, -1.0]
-
+    # v3: address words without numbers
+    awj = -1.0
     if aa and ba:
         wa_ = {x for x in aa.split() if not any(ch.isdigit() for ch in x)}
         wb_ = {x for x in ba.split() if not any(ch.isdigit() for ch in x)}
-        f.append(_jac(wa_, wb_) if (wa_ or wb_) else -1.0)
-    else:
-        f.append(-1.0)
-
+        awj = _jac(wa_, wb_) if (wa_ or wb_) else -1.0
+    f.append(awj)
+    # v3: character n-gram cosines
     f += [_cos(_ngrams(an, 2), _ngrams(bn, 2)), _cos(_ngrams(an, 3), _ngrams(bn, 3)),
           _cos(_ngrams(aa.replace(" ", ""), 3), _ngrams(ba.replace(" ", ""), 3)) if aa and ba else -1.0]
+    # v4
     f += [_cos(_ngrams(ask.replace(" ", ""), 3), _ngrams(bsk.replace(" ", ""), 3)) if ask and bsk else -1.0,
           float(ahn == bhn) if ahn and bhn else -1.0]
+    # v5
+    f += [sum(wa[x] for x in set(wa) - common), sum(wb[x] for x in set(wb) - common),
+          awj if (na and nb and na[0] == nb[0]) else -1.0]
+    # v7: hard house-number-conflict flag (independent of edit distance)
+    f.append(float(na[0] != nb[0]) if (na and nb) else -1.0)
     return f
 
 
@@ -118,6 +147,7 @@ def _feat_chunk(args):
 
 
 def iter_chunks(c, size):
+    """Slices of c (sorted by s1_id) that never split one S1's candidates."""
     s = c["s1_id"].to_numpy()
     start, n = 0, len(c)
     while start < n:
@@ -140,13 +170,13 @@ class FeatureBuilder:
         self.pool_nonlatin = self.pool.name_nonlatin.to_numpy(np.float32)
         self.pool_blank = self.pool.addr_blank.to_numpy(np.float32)
         self.pool_state_inferred = (self.pool.addr_state_src.to_numpy() == 2).astype(np.float32)
-
+        # v3: name-token IDF from the pool (document frequency), no labels
         df = Counter()
         for x in self.pool.name_core:
             df.update(set(x.split()))
         n = len(self.pool)
         self.idf = {t: math.log((1 + n) / (1 + c)) + 1.0 for t, c in df.items()}
-
+        # v3: name specificity across files (how many S1 share b's name / how many pool records share a's name)
         s1_counts = self.s1.name_core.value_counts()
         pool_counts = self.pool.name_core.value_counts()
         self.b_name_in_s1 = np.log1p(self.pool.name_core.map(s1_counts).fillna(0).to_numpy(np.float32))
