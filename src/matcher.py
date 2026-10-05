@@ -44,7 +44,7 @@ def p1_path(split, s1set, tag):
 
 
 def save_p(c, split, s1set, tag):
-    cols = [x for x in ["s1_id", "cand_id", "p", "label", "seg"] if x in c.columns]
+    cols = [x for x in ["s1_id", "cand_id", "p", "label"] if x in c.columns]
     c[cols].to_parquet(p1_path(split, s1set, tag), index=False)
     print(f"  saved probabilities -> {p1_path(split, s1set, tag)}")
 
@@ -111,21 +111,17 @@ def predict_proba(models, X):
 
 
 def predict(fb, c, models, feats, workers, split="train", s1set="holdout", cand_tag="", cache=False, reuse=False):
-    ps, segs = [], []
+    ps = []
     for X in iter_features(fb, c, workers, split, s1set, cand_tag, cache, reuse):
         ps.append(predict_proba(models, X[feats].to_numpy(np.float32)))
-        segs.append(X["b_addr_blank"].to_numpy().astype("int8"))
         print(f"  predicted {sum(len(p) for p in ps)}/{len(c)}")
     c = c.copy()
     c["p"] = np.concatenate(ps).astype(np.float32)
-    c["seg"] = np.concatenate(segs)
     return c
 
 
-def decide(c, t, t_top, t_blank=None):
-    """t_blank: separate threshold for candidates with a blank address (column 'seg' == 1), if given."""
-    thr = t if (t_blank is None or "seg" not in c.columns) else np.where(c["seg"].to_numpy() == 1, t_blank, t)
-    d = c[c.p >= thr].sort_values("p", ascending=False, kind="stable").drop_duplicates("cand_id")
+def decide(c, t, t_top):
+    d = c[c.p >= t].sort_values("p", ascending=False, kind="stable").drop_duplicates("cand_id")
     top = c.groupby("s1_id").p.max()
     return d[d.s1_id.map(top) >= t_top]
 
@@ -163,20 +159,7 @@ def tune(c, n_true):
     print("  top decision settings (OOF F0.5, t, t_top):")
     for r in res[:5]:
         print(f"    {r[0]:.4f}  t={r[1]:.2f}  t_top={r[2]:.2f}")
-    f0, t0, tt0 = res[0]
-    tb = None
-    if "seg" in c.columns and c["seg"].sum() > 0:
-        best = (f0, None)
-        for x in np.round(np.arange(0.20, 0.96, 0.05), 2):
-            fx = macro_f05(decide(c, t0, tt0, float(x)), n_true)
-            if fx > best[0] + 1e-5:
-                best = (fx, float(x))
-        if best[1] is not None:
-            print(f"  blank-address threshold t_blank={best[1]:.2f}: OOF {f0:.4f} -> {best[0]:.4f}")
-            f0, tb = best
-        else:
-            print("  blank-address threshold: no gain, using t")
-    return f0, t0, tt0, tb
+    return res[0]
 
 
 def write_tsv(path, ids, mapping, col2):
@@ -212,7 +195,6 @@ def run_train(a, workers):
     X = featurize(None if reuse_ok else FeatureBuilder("train"), c, workers, "train", s1set, cand_tag,
                   a.cache_features, a.reuse_features)
     params = dict(PARAMS, learning_rate=a.lr, num_leaves=a.leaves)
-    c["seg"] = X["b_addr_blank"].to_numpy().astype("int8")
     feats, y, groups = list(X.columns), c.label.to_numpy(), c.s1_id.to_numpy()
     Xn = X.to_numpy(np.float32)
     del X
@@ -251,7 +233,7 @@ def run_train(a, workers):
     else:
         c["p"] = oof
     save_p(c, "train", "train", a.tag)                  # OOF probabilities (for stage 2)
-    best_f, t, t_top, t_blank = tune(c, n_true)
+    best_f, t, t_top = tune(c, n_true)
 
     os.makedirs(os.path.join("models", a.tag), exist_ok=True)
     final = lgb.train(params, lgb.Dataset(Xn, y, feature_name=feats), int(np.mean(iters) * 1.1))
@@ -266,7 +248,7 @@ def run_train(a, workers):
     print("  top features (gain):\n" + (imp.head(15) / imp.sum()).round(3).to_string())
 
     os.makedirs(os.path.join("experiments", a.tag), exist_ok=True)
-    dec = {"t": t, "t_top": t_top, "t_blank": t_blank, "k": a.k, "oof_F0.5": best_f, "features": feats,
+    dec = {"t": t, "t_top": t_top, "k": a.k, "oof_F0.5": best_f, "features": feats,
            "iters": iters, "params": params, "folds": a.folds, "n_train_s1": int(len(scope)),
            "n_train_pairs": int(len(c)), "cand_tag": cand_tag,
            "catboost": bool(a.catboost and w < 1.0), "blend_w": w, "cb_iters": cb_iters}
@@ -303,7 +285,7 @@ def run_holdout(a, workers):
     c = predict(None if reuse_ok else FeatureBuilder("train"), c, models, dec["features"], workers,
                 "train", "holdout", cand_tag, a.cache_features, a.reuse_features)
     save_p(c, "train", "holdout", a.tag)
-    d = decide(c, dec["t"], dec["t_top"], dec.get("t_blank"))
+    d = decide(c, dec["t"], dec["t_top"])
 
     ids = load_split_ids("holdout")
     gt, _ = true_pairs(ids)
@@ -331,7 +313,7 @@ def run_test(a, workers):
     c = predict(None if reuse_ok else FeatureBuilder("test"), c, models, dec["features"], workers,
                 "test", "all", cand_tag, a.cache_features, a.reuse_features)
     save_p(c, "test", "all", a.tag)
-    d = decide(c, dec["t"], dec["t_top"], dec.get("t_blank"))
+    d = decide(c, dec["t"], dec["t_top"])
 
     s1 = load_normalized("test", 1, ["entity_id", "country_key"])
     ids = s1.entity_id.tolist()

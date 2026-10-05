@@ -13,16 +13,17 @@ Never change more than one major component per version without noting it.
 | v003 | 26 Sep | Stage-2 group-consistency rescoring on v002 stage-1 probabilities | 0.968 | 0.989 | 0.9580 | 0.988 / 0.920 | 0.963 | not submitted | v003-holdout-0.9580 |
 | v004 | 26 Sep | Features v3 (IDF alignment, name specificity, house-number distance, n-gram cosine) + stage-2 fallback; v002 candidates | 0.968 | 0.989 | 0.9667 | 0.992 / 0.929 | 0.965 | 0.9550 | day2-sub1 |
 | v005 | 26 Sep | Normalization v3 + blocking v3 (skeleton/address/reverse channels) + features v4 | 0.988 | 0.996 | 0.9773 | 0.994 / 0.951 | 0.970 | 0.9683 | day2-sub2 |
+| v005w | 27 Sep | Wider blocking (k30/sk10/rev5) + name_overlap feature | 0.991 | 0.997 | 0.9773 | 0.993 / 0.952 | 0.969 | ~0.969 (exact value to confirm) | day3-sub1 |
+| v008 | 27 Sep | GPT-2 cross-encoder score (g001) as stage-2 feature, on v005w/v005ws1 | 0.991 | 0.997 | 0.9835 | 0.996 / 0.962 | 0.986 | 0.9768 | v008-lb-0.9768 |
+| **v009** | 27 Sep | + XLM-R-base cross-encoder score (x001) next to GPT-2 in stage 2 | 0.991 | 0.997 | **0.9857** | 0.997 / 0.964 | 0.991 | **0.9809 (final)** | day3-sub4, v009-holdout-0.9857 |
+| v010a | 27 Sep | x001 scores widened to p1 0.005-0.995 (x001w, no retraining); stage-2 base-feature cache; test with --p1-min 0.001 | 0.991 | 0.997 | 0.9860 | 0.997 / 0.965 | 0.992 | not submitted | v010-holdout-0.9860 |
 | v006 | 27 Sep | Pruner (cap 20, tau 0.005, 10.4 candidates/S1) + features v5 + lr 0.05, 5 folds, CatBoost blend, t_blank, fallback search | 0.980 | 0.994 | 0.9778 | 0.995 / 0.950 | 0.974 | 0.9652 (regressed) | day2-sub3 |
-| v006np | 27 Sep | Features v7 (v005w + `unmatched_idf_a/b`, `hn_eq_word_jac`, `hn_conflict`) on v005's unpruned candidates, lr 0.05/5-fold | 0.988 | 0.996 | **0.9784 (best holdout)** | 0.995 / 0.952 | n/a | 0.9640 (regressed, worse than v005w) | n/a |
-| v005w | 27 Sep | Wider blocking (k30/sk10/rev5) + `name_overlap` feature | 0.991 | 0.997 | 0.9773 | 0.993 / 0.952 | 0.969 | ~0.969 (exact value to confirm) | day3-sub1 |
-| v005fr | 27 Sep | Per-country hybrid of v005 and v006 (version supplying France vs India/US rows swapped) | n/a | n/a | n/a (France unlabeled) | n/a | n/a | 0.9640 (regressed) | day3-sub2 |
-| v008 | 27 Sep | GPT-2 cross-encoder (g001) as stage-2 feature, on v005w/v005ws1 | 0.991 | 0.997 | 0.9835 | 0.996 / 0.962 | 0.986 | 0.9768 | **day3-sub3** |
-| **v009** | 27 Sep | + XLM-RoBERTa-base cross-encoder (x001) next to GPT-2 in stage 2 | 0.991 | 0.997 | **0.9857** | 0.997 / 0.964 | 0.991 | **0.9809 (final)** | day3-sub4 |
+| v006np | 27 Sep | Features v7 (v005w + `unmatched_idf_a/b`, `hn_eq_word_jac`, `hn_conflict`) on v005's unpruned candidates, lr 0.05/5-fold | 0.988 | 0.996 | 0.9784 | 0.995 / 0.952 | n/a | 0.9640 (regressed, worse than v005w) | day3-sub3 |
+| v005fr | 27 Sep | Per-country hybrid of v005 and v006 (version supplying France vs India/US rows swapped) | n/a | n/a | n/a (France unlabeled) | n/a | n/a | 0.9640 (regressed) | day2-sub4 |
 
-Rows v006, v005fr and v006np come from a parallel branch (laptop A). All three were submitted to the
-public LB and all three scored below v005 (0.9683). v006fr was prepared but never submitted. They are not part of the final lineage. Details are in the
-last section.
+Rows v006, v006np and v005fr come from a parallel branch (laptop A). All three were submitted to the
+public LB and all three scored below v005 (0.9683). v006fr was prepared but never submitted. They are not
+part of the final lineage. Details are in the last section.
 
 
 ## v000: data analysis and scaffolding
@@ -138,6 +139,17 @@ last section.
   helping France as well as India. Tag: day3-sub4.**
   **Final submission package is built from v009**: `output/` = these files, validator PASS with
   `--check-ids`.
+
+## v010 — wide-band XLM-R scores + stage-2 feature cache (after v009; not in the final package)
+- Stage-2 base features cached per split (`stage2.py cache`); reruns cost minutes. Verified identical to v009 features.
+- x001w: XLM-R x001 fold models also score p1 in [0.005, 0.02) and (0.98, 0.995] (`llm_rescore.py extend`,
+  no retraining; train rows scored only by the fold model that did not see the S1; OOF reproduction check
+  mean |diff| 0.0006). Extra pairs: train 381K, holdout 562K, test 2.1M.
+- v010a = stage 2 `--llm g001,x001w`: OOF 0.9855 (v009 0.9852); holdout 0.9860 (v009 0.9857; full stage 2, no --p1-min);
+  precision 0.9971, recall 0.9649; India 0.9853, US 0.9865.
+- Test with `--p1-min 0.001` (stage 2 only on the 10.2% of pairs with p1 >= 0.001; features verified identical,
+  skipped pairs get p2 = 0): validator PASS; outputs in /data/submissions/v010a.
+- Not finished: v010b (--group-llm) and x003 (xlm-roberta-large; stopped in fold 0 epoch 2 to free RAM).
 
 ## Superseded branches (laptop A): submitted, not in the final lineage
 
