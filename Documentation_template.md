@@ -1,22 +1,28 @@
 # ML Challenge 2026: Business Entity Resolution Solution Template
 
 **Team Name:** Sunshine
+
+
 **Team Members:** Abhigyan Varma, Cristiano Fernandes, Enrique Dias, Rayirth Deolalkar
+
+
 **Submission Date:** 27 Sep 2026
 
 ---
 
 ## 1. Executive Summary
 
-We resolve Source 1 entities against Source 2/3 with a six-channel blocking stage feeding a
-two-stage classifier: a LightGBM pairwise matcher, a LightGBM group-consistency re-scorer, and
-[CONFIRM: a final GPT-2-based re-scoring/augmentation stage — one-sentence description of what it
-adds, once confirmed], with decisions tuned end-to-end for macro F0.5 on a frozen out-of-sample
-holdout. Our core innovation is normalization that recovers cross-script and cross-format matches
-without any lookup table or external data — an Indic-to-Latin consonant skeleton (derived from the
-shared Unicode block layout of Indian scripts), a learned state-inference model built only from the
-training data's own text, and house-number-aware features. **Best confirmed public leaderboard
-score: 0.9770** (LightGBM-only pipeline alone: 0.9690, holdout F0.5 for that pipeline 0.9773+).
+We resolve Source 1 entities against Source 2/3 with a six-channel, label-free blocking stage feeding a
+three-part matcher: a pairwise LightGBM (stage 1), two fine-tuned transformer cross-encoders (GPT-2 small
+and XLM-RoBERTa-base) that re-read the raw text of the uncertain pairs, and a second LightGBM (stage 2)
+that combines the stage-1 probability, group-consistency evidence from each S1's other candidates and the
+cross-encoder probabilities. All decisions are tuned for macro F0.5 on out-of-fold predictions and checked
+once per version on a frozen holdout. The foundation is normalization and blocking that recover
+cross-script and cross-format matches without any external data: an Indic-to-Latin consonant skeleton, a
+state-inference map learned from the data's own text, house-number-aware features, and a reverse blocking
+channel, reaching 99.1% candidate recall. The two cross-encoders together were the largest late gain:
+holdout 0.9773 → 0.9857 over the LightGBM-only pipeline on the same candidates (GPT-2 +0.0062, XLM-R +0.0022).
+Final submission **v009**: holdout F0.5 **0.9857**, public leaderboard **0.980893**.
 
 ---
 
@@ -24,194 +30,194 @@ score: 0.9770** (LightGBM-only pipeline alone: 0.9690, holdout F0.5 for that pip
 
 ### 2.1 Problem Analysis
 
-- **Scale:** 2.2M train S1 / 5.0M S2 / 5.3M S3 records; 1.7M test S1 / 4.9M S2 / 5.1M S3. All
-  same-country pairs in a naive cross join would be 6.7 trillion comparisons.
-- **Countries:** train is US 60% / India 40%; test adds **France at 15%, with zero training
-  labels**. Every true match is same-country (confirmed on a 300K-pair sample), so blocking and
-  decisions never need to cross countries.
-- **Ground truth structure:** each S2/S3 record belongs to at most one S1 (0 exceptions in the
-  full ground truth) — a hard constraint we exploit directly in the decision rule. Match counts per
-  S1: 5.6% singletons, up to 11 matches, mean 3.46. S2/S3 are not deduplicated (up to 5–6 copies of
-  one business per source).
-- **Noise patterns found in EDA:** native-script names (Devanagari, Gujarati script observed
-  directly; the normalization is written to generalize to the wider family of Unicode-block-aligned
-  Indic scripts), injected accents, typos, word reordering, appended junk ("Center", "#35740",
-  ".com" suffixes), truncated addresses, state-name variants (UP / Uttar Pradesh / Devanagari
-  script), house-number variants (3906 vs 3906a, "0071/1" vs "71/1"), digits spelled into words
-  ("co1onial"), postcodes fused into house numbers, and letters glued to digits ("fl13"). Postcodes
-  are rare overall (US ~11%, India <1%). Chain-like repeated names are common (e.g. one name occurs
-  253 times in S1).
-- **Missing data:** S1 has zero blank names/addresses; S2/S3 have ~3% blank addresses. Blank-address
-  candidates were our single weakest matching segment throughout development (Section 5).
+- **Scale:** 2.2M train S1 / 5.0M S2 / 5.3M S3 records; 1.7M test S1 / 4.9M S2 / 5.1M S3. A naive
+  same-country cross join would be trillions of comparisons.
+- **Validation split:** a frozen 80/20 split of train S1 (seed 42): 1,765,457 S1 for training and
+  441,364 S1 held out. The holdout is scored once per version and never used to tune thresholds.
+- **Countries:** train is US 60% / India 40%; test adds **France at 15%, with zero training labels**.
+  Every true match is same-country (confirmed on a 300K-pair sample), so blocking and decisions never
+  cross countries. Country is treated as an open set of labels; there is no country feature.
+- **Ground truth structure:** each S2/S3 record belongs to at most one S1 (0 exceptions in the full
+  ground truth), a hard constraint used directly in the decision rule. Matches per S1: 5.6% singletons,
+  up to 11, mean 3.46. S2/S3 are not deduplicated (up to 5 to 6 copies of one business per source);
+  about 74% of S2/S3 records match some S1, the rest are distractors.
+- **Noise patterns found in EDA:** native-script names (Devanagari, Gujarati, Tamil, …), injected accents,
+  typos, word reordering, appended junk ("Center", "#35740", ".com" forms), truncated addresses,
+  state-name variants (UP / Uttar Pradesh / Devanagari), house-number variants (3906 vs 3906a,
+  "0071/1" vs "71/1"), digits inside words ("co1onial"), postcodes fused into house numbers, letters glued
+  to digits ("fl13"). Postcodes are rare (US ~11%, India <1%). Chain-like names repeat (one name occurs
+  253 times in S1; 28.5% of French S1 names repeat 5 or more times).
+- **Missing data:** S1 has no blank names/addresses; S2/S3 have ~3% blank addresses, which proved to be the
+  weakest matching segment (candidate recall 0.52 on blank-address pairs in the v003 error analysis).
+- **France before any modelling:** an unsupervised diagnostic on test found France S2/S3 state in only
+  66 to 68% of records (addresses end in a city, not a state) and postcodes mixed into house numbers.
+  Both were fixed in normalization v2 (see 2.2).
 
 ### 2.2 Solution Strategy
 
-**Approach Type:** Blocking (multi-channel, unsupervised) → two-stage classifier (LightGBM pairwise
-+ LightGBM group-consistency) → [CONFIRM: GPT-2 stage — describe as an additional rescoring pass,
-a blended score, or a feature into a further model] → rule-based decision layer, thresholds tuned
-on out-of-fold predictions throughout.
+**Approach Type:** unsupervised multi-channel blocking → stage-1 pairwise classifier (LightGBM) →
+transformer cross-encoders on uncertain pairs (fine-tuned GPT-2 small and XLM-RoBERTa-base) → stage-2
+re-scorer (LightGBM over stage-1 probability, group-consistency and cross-encoder features) → rule-based
+decision layer. Every stage is trained on out-of-fold outputs of the previous one, grouped by S1.
 
-**Core Innovation:** Normalization and blocking that close the India/France gap without external
-data or translation: (1) an Indic-to-Latin **consonant skeleton** exploiting the fact that major
-Indian scripts share one Unicode block layout, so a single Devanagari consonant table maps
-Gujarati/Tamil/Telugu/etc. names onto the same skeleton as their Latin transliteration, enabling
-cross-script blocking and a `skel_cos3` similarity feature with no dictionary; (2) an **unsupervised
-learned state-fill**: address components (city/locality) are counted against the states that always
-co-occur with them in the same split's own S1 records (which all carry an explicit state), and used
-to fill missing S2/S3 states purely from text statistics — no labels, no geocoding; (3) a **reverse
-blocking channel** (each S2/S3 record finds its own best-matching S1, not just the other way
-around) whose score became our single most important matching feature; (4) validating every
-significant pipeline change against the **leaderboard, not only the internal holdout** — a
-frozen-holdout validation set, however carefully constructed, does not reproduce the full
-competitive dynamics of the test set (Section 5 discusses a concrete case where this mattered).
+**Core Innovation:**
+1. **Consonant skeleton for Indic scripts.** Major Indian scripts share one Unicode block layout, so a
+   single Devanagari consonant table maps Gujarati/Tamil/Telugu/… names onto the same skeleton as their
+   Latin transliteration. This drives a cross-script blocking channel and a similarity feature with no
+   dictionary or translation.
+2. **Learned state fill without labels.** Address components (city, locality) are counted against the
+   states they co-occur with in the same split's S1 records (which all carry a state); components seen
+   ≥20 times with ≥98% purity fill missing S2/S3 states. France S2/S3 state coverage rose from 67% to 97%
+   and India from 91% to 96.5%. State-block blocking misses fell from 9,622 to 1,246 on the holdout.
+3. **Reverse blocking channel.** Each S2/S3 record finds its own best S1s; its score is the most
+   important stage-1 feature (gain 0.450 in v005 stage 1).
+4. **Cross-encoders only where the tree model is unsure.** GPT-2 and XLM-R read the raw text of both
+   records, but only for the ~2% of pairs with stage-1 probability in [0.02, 0.98]. The multilingual
+   XLM-R reads Devanagari/Tamil and French as real sub-words, which a character-similarity model cannot.
+
+**Effect of normalization (200K train-fold true pairs):** exact match on the core name rose from 0.220
+(raw EDA baseline) to 0.508 after normalization v1; address token Jaccard rose from 0.597 to 0.766.
+Random (non-matching) pairs stay at 0.000 exact match, so the normalization does not create false equality.
 
 ---
 
 ## 3. Candidate Generation (Blocking)
 
-- **Blocking keys used:** six unsupervised channels, unioned, each restricted to a
-  (`country`, `state`) block (records with no inferred state join every block of their country):
-  1. **Word channel** — IDF-weighted cosine over normalized name words, address words, address
-     numbers, and a composite house-number token (e.g. "71/1").
-  2. **Trigram channel** — character trigrams of the no-space name, for typos/concatenations.
-  3. **Skeleton channel** — trigrams of the Indic-to-Latin consonant skeleton, for cross-script
-     matches.
-  4. **Address-only channel** — address tokens/numbers alone, for names that diverge completely.
-  5. **Non-Latin address channel** — address-only similarity restricted to pool records with
-     non-Latin names.
-  6. **Reverse channel** — each S2/S3 record's own top-k best S1 matches, added back as candidates.
-  A supervised meta-blocking pruner (a small LightGBM using only blocking-stage signals) was
-  developed to shrink the candidate set, but is **not used in the submitted pipeline** — it
-  measurably regressed leaderboard performance despite improving the internal holdout score
-  (Section 5 explains why, and why we trust the leaderboard result over holdout here).
-- **Candidate pairs generated:** 63.5M for the submitted pipeline (unpruned, 36.7/S1 average, max
-  6,243 for one pathological S1).
-- **How true matches were not lost:** candidate recall (share of true matches present in the
-  candidate set) is tracked as the primary blocking metric on the frozen holdout, separately from
-  final F0.5 — our blocking reaches **98.8%** candidate recall (oracle ceiling F0.5 = 0.996, i.e. a
-  perfect matcher on these candidates would score 0.996). Every blocking iteration's miss set was
-  categorized (non-Latin name, address-only overlap, state mismatch, outranked, blank address) and
-  the next channel was built to target the largest remaining category, taking candidate recall from
-  94.8% (single-channel baseline) to 98.8%.
+- **Blocking keys used:** six unsupervised channels, unioned, each restricted to a (`country`, `state`)
+  block (records with no inferred state join every block of their country). Final configuration (v005w):
+  1. **Word channel (top 30):** IDF-weighted cosine over normalized name words, a no-space name token,
+     address words, address numbers and a composite house-number token (e.g. "71/1").
+  2. **Trigram channel (top 10):** character trigrams of the no-space name (typos, concatenations).
+  3. **Skeleton channel (top 10):** trigrams of the Indic-to-Latin consonant skeleton (cross-script).
+  4. **Address-only channel (top 5):** address tokens/numbers alone, for names that diverge completely.
+  5. **Non-Latin address channel (top 5):** address similarity against pool records with non-Latin names.
+  6. **Reverse channel (top 5):** each S2/S3 record's own top-5 S1s, added back as candidates.
+  Tokens with document frequency above 2% of a block are dropped; top-k via sparse matrix top-n
+  multiplication. Blocks are merged where sources mix labels (India: AP+TG, JK+LA).
+  A supervised meta-blocking pruner was also developed (v006, cap 20, tau 0.005, 10.4 candidates per S1)
+  but the final version uses the **unpruned** candidate set: pruning lowered the public score
+  (0.9683 → 0.9652) despite a slightly higher holdout (0.9773 → 0.9778). Best explanation: independent
+  top-K pruning per S1 can drop a candidate from its true owner's crowded list while a less contested S1
+  keeps it. The holdout under-represents this because far fewer S1s compete for each S2/S3 record there
+  than on the full test set.
+- **Candidate pairs generated:** test **115.4M** pairs (66.6 per S1); holdout 30.0M (68.0 per S1).
+- **How true matches were not lost:** candidate recall is tracked on the frozen holdout as the primary
+  blocking metric, separately from F0.5. Final blocking reaches **99.11%** candidate recall (India 98.73%,
+  US 99.37%), an oracle F0.5 ceiling of **0.9971**. Each version's misses were categorized (non-Latin name,
+  address-only overlap, state mismatch, outranked, blank address) and the next channel targeted the largest
+  category: 94.8% (one channel, v001) → 96.8% (v002) → 98.8% (v005) → 99.1% (v005w, wider k).
+  Holdout blocking misses fell from 57,559 (v001, at top-50) to 49,259 (v002) to 18,114 (v005). The v001
+  breakdown that guided the next channels: non-Latin names 21.1K, address-only overlap 13.3K, state
+  mismatch 9.6K, no shared number 9.0K, outranked 4.5K.
+  The file `output/candidate_pairs.tsv` is exactly the set scored by the models.
 
 ---
 
 ## 4. Matching Model
 
-**Features used (LightGBM stages):**
-- **Name features:** exact/no-space-exact match, Levenshtein ratio, token-set/token-sort/partial
-  ratio, Jaro-Winkler, token Jaccard, an **overlap coefficient** (min-based, so acronym/subset name
-  pairs like "IBM" vs "IBM International Business Machines" score highly without the length penalty
-  a plain Jaccard applies), first-token match, length ratio, legal-suffix Jaccard, IDF-weighted
-  token alignment (share of each side's rare-word mass matched, and its inverse — the IDF mass of
-  tokens that do *not* match, a direct signal for "these share a common word but are otherwise
-  unrelated"), name-frequency-based chain indicators, character 2-/3-gram cosine, and the
-  cross-script skeleton cosine.
-- **Address features:** fuzzy ratio, token-set ratio, token Jaccard, length ratio, number Jaccard,
-  first-number match, state agreement, zip agreement, **house-number edit distance and log-scaled
-  numeric distance** (the single largest feature-gain contributor after the blocking scores), a
-  composite-house-number equality flag, a hard binary house-number-**conflict** flag (both sides
-  have a number and it differs, independent of how close the edit distance looks), and an
-  address-word-overlap check specifically when house numbers agree (same building number, different
-  street name → likely a different business).
-- **Blocking/context features:** each channel's score and rank, score relative to the S1's best
-  candidate, candidate count, source (S2/S3) flag, blank-address and non-Latin-name flags.
-- **Group-consistency (stage 2) features:** for each candidate, agreement with the S1's other
-  confident candidates (top 6 with stage-1 probability ≥ 0.3) on name, address, numbers, zip and
-  state — plus the stage-1 probability's rank and gap to the best/second-best.
+**Features used:**
+- **Stage 1 (71 features per pair; no country feature):**
+  - *Name:* exact / no-space exact, Levenshtein ratio, token-set / token-sort / partial ratios,
+    Jaro-Winkler, token Jaccard, overlap coefficient (acronyms, subset names), first-token match,
+    length ratio, legal-suffix Jaccard, IDF-weighted token alignment (share of each side's rare-word mass
+    matched), name frequency in S1 and pool (chain indicators), character 2-/3-gram cosine, skeleton cosine.
+  - *Address:* fuzzy ratio, token-set ratio, token Jaccard, length ratio, number Jaccard, first-number
+    match, state and zip agreement, house-number edit distance and log numeric distance, composite
+    house-number equality, address-word overlap without numbers.
+  - *Blocking/context:* each channel's score and rank, score relative to the S1's best candidate,
+    candidate count, S2/S3 flag, blank-address / non-Latin / inferred-state flags.
+  - *Most useful (v005 stage-1 gain):* reverse-channel score 0.450, combined blocking score 0.204,
+    house-number edit distance 0.041, number Jaccard 0.039, skeleton channel score 0.024, skeleton
+    trigram cosine 0.021.
+- **Cross-encoder inputs:** the raw business name and address of both records, serialized as
+  `name: … addr: …` for each side (GPT-2: `a <eos> b`; XLM-R: its text-pair format
+  `<s> a </s></s> b </s>`), max 96 tokens.
+- **Stage 2 (24 features):** group consistency: for each candidate, agreement with the S1's other
+  confident candidates (top 6 with stage-1 p ≥ 0.3) on name, no-space name, address, numbers, zip and state
+  (max, probability-weighted mean, strong-link count); stage-1 probability, its rank, gap to the S1's best,
+  second-best, group counts (≥0.5, ≥0.3), sum, candidate count, S3 flag; and for each cross-encoder its
+  probability and gap to the S1's best cross-encoder score (missing outside the scored band).
 
 **Model type:**
-1. **Stage 1 (pairwise, LightGBM, MIT-licensed):** trained on candidate pairs using the string/
-   address/blocking features above.
-2. **Stage 2 (group re-scorer, LightGBM):** takes stage-1 probabilities plus the group-consistency
-   features and rescores each candidate against its own S1's other candidates, with a **fallback
-   rule**: an S1 with at most one confident co-candidate falls back to the stage-1 score rather than
-   trusting an unsupported group signal (this fixed a measured regression on single-match S1
-   entities found during error analysis).
-3. **[CONFIRM: Stage 3 — GPT-2.]** A GPT-2 checkpoint ([CONFIRM: exact variant, e.g. `gpt2` /
-   `gpt2-medium`; parameter count; MIT license confirmed on the model card] — well under the
-   competition's 8B-parameter cap) was fine-tuned [CONFIRM: entirely on our own labelled India/US
-   pairs, with no external data] as [CONFIRM: a match/no-match sequence classifier / a reranker],
-   run [CONFIRM: locally, with no network calls at inference — confirm this explicitly] on
-   [CONFIRM: which candidates — all of them, or a restricted uncertain band?]. Its output is
-   [CONFIRM: combined with the stage-2 LightGBM score by — replacing it / blended with it / fed in
-   as an additional feature]. This stage improved the confirmed public leaderboard score from
-   0.9690 (LightGBM-only) to **0.9770**.
-   A CatBoost (Apache 2.0) blend was also tested on stage 1 in an earlier iteration; its gain was
-   small (+0.0002 on out-of-fold data) and it is not used in the submitted pipeline.
+1. **Stage 1: LightGBM** (MIT): learning rate 0.1, 127 leaves, min 100 rows per leaf, feature/bagging
+   fraction 0.9/0.8; 5-fold group-by-S1 early stopping (best iterations 1048 to 1226); final model on all
+   training pairs with 1.1 × mean best iteration. Training data: 300K train-fold S1, 20.4M candidate pairs.
+   Out-of-fold stage-1 probabilities are saved for the next stages.
+2. **Cross-encoders: GPT-2 small** (MIT, 124M parameters) **and XLM-RoBERTa-base** (MIT, 278M), each
+   fully fine-tuned as a binary pair classifier (linear head; GPT-2 reads the last token) on the 346K
+   uncertain train-fold pairs (stage-1 p in [0.02, 0.98], top 8 per S1; 32.7% positive). 2-fold
+   GroupKFold by S1 gives out-of-fold scores for stage 2; holdout and test use the mean logit of the two
+   fold models. 2 epochs, batch 64, AdamW with one-cycle schedule (GPT-2: lr 3e-5, fp16; XLM-R: lr 2e-5,
+   bf16). On the band pairs, out-of-fold AUC: stage 1 0.9256, GPT-2 0.9430, **XLM-R 0.9679**; logloss
+   0.3108 / 0.2815 / **0.2121**.
+   *Compute:* AWS g5.2xlarge (one A10G). GPT-2 trains at about 455 pairs/s (30 min) and scores about
+   2K pairs/s; XLM-R trains at about 530 pairs/s and scores about 4.8K pairs/s. The first XLM-R test run
+   was OOM-killed at 20.5 GB because 2.4M pairs were tokenized in one call while stage 2 held 10 GB;
+   encoding in 50K-row chunks brought it to about 8 GB.
+3. **Stage 2: LightGBM** (same settings, 3-fold group-by-S1, best iterations 100 to 108) trained on the
+   out-of-fold outputs above. Gain importance: stage-1 probability 0.931, its rank 0.033, XLM-R
+   probability 0.027, GPT-2 probability 0.001 (XLM-R absorbs most of GPT-2's signal). The earlier
+   fallback rule (use stage 1 when an S1 has ≤1 confident candidate, introduced in v004 to fix a
+   regression on 1-match S1s: 0.8565 → 0.9009) is no longer selected on OOF, most likely because the
+   cross-encoders supply the evidence that single-candidate S1s lacked.
 
-**Threshold selection method:** grid search (coarse 0.05, refined to 0.01) on **out-of-fold**
-predictions to maximize macro F0.5, never on the held-out validation set. Three rules, applied in
-order: (1) keep pairs with probability ≥ *t*; (2) each S2/S3 record is assigned to at most one S1 —
-the highest-probability one — directly justified by the ground truth's own uniqueness property, and
-confirmed empirically (holdout F0.5 is higher with this rule than without it, 0.9773 vs 0.9769 in
-our reference LightGBM-only pipeline); (3) a singleton gate: an S1 keeps its matches only if its
-best candidate's probability ≥ *t_top*. No pretrained models are used in the LightGBM stages; the
-GPT-2 stage is the one component with pretrained weights, fine-tuned entirely on our own data (see
-Section 4's stage-3 note above for the compliance details to confirm before this ships).
+**Threshold selection method:** grid search (0.05 steps, refined to 0.01) on **out-of-fold** stage-2
+predictions to maximize macro F0.5, never on the holdout. Three rules, in order: (1) keep pairs with
+probability ≥ *t*; (2) each S2/S3 record is assigned to at most one S1, the highest-probability one
+(justified by the ground truth's uniqueness property; holdout F0.5 is higher with the rule than without,
+0.9580 vs 0.9574 when measured on v003); (3) singleton gate: an S1 keeps its matches only if its best
+probability ≥ *t_top*. Final: *t* = *t_top* = **0.73** (OOF F0.5 0.9852).
+
+**Data and licences:** only competition data is used; there are no lookups, APIs, geocoding or scraping.
+The two pretrained checkpoints are MIT-licensed and far below 8B parameters; their weights are downloaded
+once at setup and fine-tuned only on the provided training pairs.
 
 ---
 
 ## 5. Results & Error Analysis
 
-- **F_0.5 Score (macro):**
-  - Public leaderboard, **best confirmed: 0.9770** (with the GPT-2 stage-3 rescoring).
-  - Public leaderboard, LightGBM-only pipeline: **0.9690**.
-  - Holdout F0.5, LightGBM-only pipeline (reference version, `v005`/`v005w`): **0.9773**,
-    tracking its own out-of-fold estimate (0.9763) to within 0.001 — the two-stage LightGBM
-    pipeline does not overfit its own validation split.
-- **A genuine, load-bearing finding from our validation process:** partway through development we
-  observed that **holdout F0.5 stopped reliably predicting leaderboard direction** for certain
-  classes of change. Two concrete examples: (a) a supervised candidate-pruning step improved
-  holdout F0.5 (+0.0005) but *reduced* the leaderboard score (−0.0031); (b) a further round of
-  added matching features, evaluated on the exact same unpruned candidate set with no pruning
-  involved at all, produced our single best holdout score of the entire project (0.9784) yet still
-  scored *worse* on the leaderboard than the simpler feature set it was compared against (0.9640
-  vs 0.9690). Root cause, best evidence to date: our internal holdout, while a fair random sample
-  of Source 1 entities, under-represents the amount of competition for shared Source 2/3 records
-  that occurs across the *full* test set (every Source 1 entity in test genuinely competes for
-  Source 2/3 matches against many more entities than a partial holdout can simulate, because
-  candidates it would compete against are disproportionately concentrated in the *train* fold,
-  which never enters the holdout's competitive pool). **Practical consequence for our process:**
-  from this point in development onward, only confirmed leaderboard scores were used to select
-  between competing pipeline variants; holdout was still used as a sanity floor (to catch a
-  version that's obviously broken) but never to rank two reasonable candidates against each other.
-  We regard this as the most important methodological lesson of the project and would build
-  multiple independent holdout-style validation constructions earlier in any future iteration.
-- **Common false positives (wrong merges):** distinct businesses that share a street address or a
-  near-identical name — e.g. two different companies at the same building number, or the same
-  chain-style name appearing at different addresses. House-number-distance/conflict features and
-  IDF-based "unmatched token" features were added specifically to target this pattern.
-- **Common false negatives (missed matches):** the dominant category by far is **blank-address
-  candidates** — pairs where one side's address is empty and the name alone must decide; recall on
-  this segment was only ~51% versus ~99% when an address is present, because near-identical names
-  can't be confirmed without any address signal. This remained only partially addressed at
-  submission time. The remaining blocking-stage misses (candidates never generated at all) are a
-  small and well-characterized share of total loss (~0.004 of the total ceiling gap), concentrated
-  in non-Latin names with very thin addresses.
-- **Note on France:** France has no training labels, so it cannot be error-analyzed directly. A
-  confidence-profile diagnostic on stage-1 probabilities showed the model was not more *uncertain*
-  on France than on India/US at any version checked, meaning any remaining France-specific gap is
-  made of confident errors rather than a coverage problem — consistent with normalization/blocking
-  improvements (which are country-agnostic by construction) closing most of an initially large
-  French gap over successive iterations.
+- **F_0.5 Score (macro), final model v009:** holdout **0.9857** (out-of-fold 0.9852); public leaderboard
+  **0.980893**. Micro precision 0.997, micro recall 0.964; singleton accuracy 0.991. By country (holdout):
+  India 0.9848, US 0.9864. By true match count: 0 → 0.991, 1 → 0.952, 2 → 0.983, 3+ → 0.989.
+  The final submission contains 5,780,837 matched IDs.
+- **Where the remaining loss is (v009 holdout, pairs among candidates):** 45,900 wrong pairs
+  (41,458 missed and 4,442 false) plus 13,545 true pairs never generated by blocking.
+  77% of the wrong pairs lie in the cross-encoder band (stage-1 p 0.02 to 0.98), 16% just outside it
+  (0.005 to 0.02 and 0.98 to 0.995), 7% far outside. The model is now precision-heavy, as F0.5 rewards.
+  For comparison, v008 (GPT-2 only) had 51,230 wrong pairs, 79% of them inside the band; that result
+  motivated adding a second, multilingual cross-encoder on the same band.
+- **Common false positives (wrong merges):** distinct businesses sharing a building/street address or a
+  near-identical chain-style name at different addresses; house-number distance, IDF "unmatched token"
+  features and the cross-encoders target these.
+- **Common false negatives (missed matches):** blank-address candidates, where the name alone must decide;
+  heavily abbreviated or transliterated names with thin addresses; and pairs where stage 1 is confident
+  the other way (p < 0.02), which the cross-encoders never see. Blocking misses concentrate in non-Latin
+  names with very short addresses.
+- **France (no labels):** judged by public-LB movement and prediction statistics. v009 test predictions are
+  balanced across countries (average matches France 3.28 / India 3.33 / US 3.36; empty rows 5.8% / 5.9% /
+  5.8%). The holdout-to-LB gap (driven by France) shrank from 0.012 (v004) to 0.009 (v005) to
+  0.0067 (v008) to 0.0048 (v009): the multilingual cross-encoder helps France as well as India.
+  If India and US score on test as they do on the holdout, the implied France F0.5 rose from about 0.87
+  (v001) to about 0.91 (v002, after learned state fill) to about 0.927 (v005). Stage-1 confidence
+  profiles for France sit between US and India at every version checked, so the France gap comes from
+  confident errors, not from missing coverage. For v001, the country mix alone (France added, no France
+  labels) explains about 0.006 of the holdout-to-LB gap.
 
 ---
 
 ## 6. Conclusion
 
-Our solution treats candidate generation as the primary lever for coverage (six complementary,
-label-free blocking channels reaching 98.8% candidate recall) and treats precision as an explicit,
-measured objective throughout the matching stage, in line with F0.5's 2x precision weighting — via
-house-number and IDF-based disagreement features, a data-justified one-S1-per-record uniqueness
-rule, a group-consistency re-scorer with a fallback safeguard for sparse cases, and [CONFIRM:
-one sentence on what the GPT-2 stage contributes to precision/recall specifically, once confirmed].
-The main lesson learned, and the one we would apply earliest in any future iteration, is that our
-internal validation holdout — while reliable for catching obviously broken changes — systematically
-under-represents the full test set's cross-entity competition dynamics, and so cannot be trusted
-alone to rank competing model variants; we discovered this by comparing several submissions that
-differed only in which population or feature set supplied which predictions, a diagnostic technique
-we now consider essential rather than optional for this class of problem.
+Candidate generation was treated as the lever for coverage (six label-free channels, 99.1% candidate
+recall) and precision as an explicit objective of the matching stage, in line with F0.5. The biggest late
+gain came from adding a multilingual transformer only where the tree model was uncertain: it reads
+native-script and French text directly, lifting India from 0.971 to 0.985 on the holdout, and it costs
+minutes of GPU time because it scores under 2% of pairs. Lessons: measure blocking recall separately from
+F0.5; train every stage on out-of-fold outputs of the previous one; and compare submissions that differ in
+one component only, since the public LB contains a country (France) that the holdout cannot measure.
+The holdout alone also proved unreliable as a selection signal: in a parallel branch, adding the v7 features (unmatched-token and
+house-number conflict features on top of v005w's) to v005's unpruned candidates (v006np) gave the best
+holdout in that branch (0.9784) but a public score of 0.9640, below v005's 0.9683 and v005w's. After that result, confirmed leaderboard scores decided
+which version to keep, which led to the v008 and v009 cross-encoder submissions.
 
 ---
 
@@ -219,37 +225,50 @@ we now consider essential rather than optional for this class of problem.
 
 ### A. Code Artefacts
 
-The complete, runnable pipeline ships under `code/business_entity_resolution/` (`src/`, `README.md`,
-`requirements.txt`). Entry points, run in order from the package root:
+The runnable pipeline is under `code/business_entity_resolution/` (`src/`, `README.md`,
+`requirements.txt`); `src/run_all.sh` runs everything below in order with the exact flags:
 
-1. `src/normalization.py --split train` / `--split test` — builds normalized caches.
-2. `src/blocking.py --split train --s1-set holdout|train --tag <v>` and `--split test --tag <v>` —
-   six-channel candidate generation.
-3. `src/matcher.py train|holdout|test --tag <v>s1 --cand-tag <v>` — stage-1 pairwise classifier.
-4. `src/stage2.py train|holdout|test --stage1 <v>s1 --tag <v>` — stage-2 group re-scorer.
-5. [CONFIRM: entry point script(s) for the GPT-2 stage-3 fine-tuning and inference, to be added
-   under `src/` and listed here with their exact invocation, before this package is finalized.]
-6. `src/check_submission.py` and `utils/validate_submission.py` — format validation before
-   submission; writes/checks `output/matching_results.tsv` and `output/candidate_pairs.tsv`.
+1. `src/make_split.py`: frozen 80/20 holdout split of train S1 (seed 42).
+2. `src/normalization.py --split train|test`: normalized caches.
+3. `src/blocking.py`: six-channel candidate generation (holdout, 300K train-fold sample, test).
+4. `src/matcher.py train|holdout|test --tag v005ws1 --cand-tag v005w`: stage 1; saves stage-1 probabilities.
+5. `src/llm_rescore.py train|holdout|test --tag g001` (GPT-2) and `--tag x001 --model xlm-roberta-base`
+   (XLM-R): cross-encoders on the uncertain band.
+6. `src/stage2.py train|holdout|test --tag v009 --llm g001,x001`: stage 2; writes
+   `output/matching_results.tsv` and `output/candidate_pairs.tsv`.
+7. `src/check_submission.py`, `utils/validate_submission.py`: format checks (validator passes with
+   `--check-ids` on the final package).
 
-Diagnostics used throughout development (`error_analysis.py`, `diagnose_blocking.py`,
-`diagnose_country.py`, `diagnose_france.py`) read ground truth only for analysis; no labels are used
-for training or threshold tuning beyond the frozen train-fold / holdout split. Full version history,
-exact parameters and every intermediate metric are in `experiments/EXPERIMENTS.md`.
+Diagnostics (`error_analysis.py`, `diagnose_blocking.py`, `diagnose_country.py`) read ground truth for
+analysis only. Version history and every intermediate metric: `experiments/EXPERIMENTS.md`.
 
 ### B. Additional Results
 
 | Version | Change | Candidate recall | Holdout F0.5 | Public LB |
 |---|---|---|---|---|
 | v001 | Baseline: word-only blocking + LightGBM | 94.8% | 0.9481 | 0.9310 |
-| v002 | + state-fill normalization, 3-channel blocking | 96.8% | 0.9545 | 0.9436 |
-| v004 | + house-number/IDF features, stage-2 fallback | 96.8% | 0.9667 | 0.9550 |
-| v005 | + skeleton/address/reverse channels | **98.8%** | 0.9773 | 0.9683 |
-| v006 | + supervised candidate pruning, feature/model tuning | 98.0% (pruned to 10.4/S1) | 0.9778 | 0.9652 (regressed — pruning under test-time competition; not used) |
-| v005w | + overlap-coefficient name feature, unpruned | 98.8% | ~0.9773 | 0.9690 |
-| v006np | + further feature additions, unpruned, no pruner | **98.8%** | **0.9784 (best ever)** | 0.9640 (regressed — see Section 5's central finding; not used) |
-| **v005w + GPT-2 stage 3** | + fine-tuned GPT-2 rescoring | 98.8% | [CONFIRM] | **0.9770 (submitted)** |
+| v002 | + learned state fill, 3-channel blocking | 96.8% | 0.9545 | 0.9436 |
+| v003 | + stage-2 group-consistency rescoring on v002 probabilities | 96.8% | 0.9580 | not submitted |
+| v004 | + house-number / IDF features, stage 2 with fallback | 96.8% | 0.9667 | 0.9550 |
+| v005 | + skeleton / address / reverse channels | 98.8% | 0.9773 | 0.9683 |
+| v006 | + supervised candidate pruning (10.4/S1), features v5, CatBoost blend | 98.0% | 0.9778 | 0.9652 |
+| v006np | features v7 (v005w + unmatched-token and house-number conflict features) on v005's unpruned candidates | 98.8% | 0.9784 | 0.9640 |
+| v005w | wider channels (k 30 / skeleton 10 / reverse 5) + name overlap feature | 99.1% | 0.9773 | ~0.969 (exact value to confirm) |
+| v005fr | per-country hybrid of v005 and v006 (version supplying France vs India/US rows swapped) | n/a | n/a | 0.9640 |
+| v008 | + GPT-2 cross-encoder feature in stage 2 | 99.1% | 0.9835 | 0.9768 |
+| **v009** | + XLM-RoBERTa cross-encoder (final) | **99.1%** | **0.9857** | **0.9809** |
 
-Country breakdown (holdout, LightGBM-only pipeline): India F0.5 0.9712–0.9728, US F0.5 0.9813–0.9821
-depending on exact feature version — a gap that narrowed from 0.043 in v001 to ~0.010 as
-normalization and blocking improved.
+Notes on the table:
+- v006, v006np and v005fr were submitted to the public LB. They are superseded branches, not part of the
+  final lineage. The per-country hybrid v005fr (swaps the version supplying France versus India/US rows)
+  scored 0.9640 and v006np scored 0.9640. All three fell below pure v005 (0.9683), so none was kept.
+  Holdout and candidate recall are n/a for the hybrid because France has no labels to score on. A second
+  hybrid, v006fr, was prepared but not submitted.
+- The v009 public score (0.980893) is +0.0041 over v008, against a holdout gain of +0.0022.
+
+Holdout oracle F0.5 (the ceiling given the candidates): 0.980 (v001), 0.989 (v002), 0.996 (v005),
+0.997 (v005w onward).
+
+Cross-encoder band sizes (pairs scored): train 346K of 20.4M, holdout 509K of 30.0M, test 2.44M of 115.4M.
+Country breakdown (holdout): India 0.9225 (v001) → 0.9712 (v005) → 0.9848 (v009);
+US 0.9652 → 0.9813 → 0.9864.
